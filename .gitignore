@@ -1,0 +1,14 @@
+.DS_Store
+.vscode/
+*_history.sh
+*.backup
+*.bak
+*.bk*
+*.broken
+*.debug
+*.ge
+*.gt*
+*.le
+.git_*
+PUSH_TO_GITHUB.md
+*.sed
