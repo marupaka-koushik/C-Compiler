@@ -1,6 +1,7 @@
 %{
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "parser.tab.h"
 
 int line_num = 1;
@@ -30,12 +31,23 @@ OCTAL       [0-7]
 "void"              { return VOID; }
 "float"             { return FLOAT; }
 "double"            { return DOUBLE; }
+"long"              { return LONG; }
+"short"             { return SHORT; }
+"unsigned"          { return UNSIGNED; }
+"signed"            { return SIGNED; }
 
 "if"                { return IF; }
 "else"              { return ELSE; }
 "while"             { return WHILE; }
 "for"               { return FOR; }
+"do"                { return DO; }
 "return"            { return RETURN; }
+"break"             { return BREAK; }
+"continue"          { return CONTINUE; }
+
+"struct"            { return STRUCT; }
+"union"             { return UNION; }
+"enum"              { return ENUM; }
 
 "+"                 { return PLUS; }
 "-"                 { return MINUS; }
@@ -43,7 +55,16 @@ OCTAL       [0-7]
 "/"                 { return DIVIDE; }
 "%"                 { return MOD; }
 
+"++"                { return INC; }
+"--"                { return DEC; }
+
 "="                 { return ASSIGN; }
+"+="                { return PLUS_ASSIGN; }
+"-="                { return MINUS_ASSIGN; }
+"*="                { return STAR_ASSIGN; }
+"/="                { return DIV_ASSIGN; }
+"%="                { return MOD_ASSIGN; }
+
 "=="                { return EQ; }
 "!="                { return NE; }
 "<"                 { return LT; }
@@ -55,6 +76,13 @@ OCTAL       [0-7]
 "||"                { return OR; }
 "!"                 { return NOT; }
 
+"&"                 { return AMPERSAND; }
+"|"                 { return PIPE; }
+"^"                 { return XOR; }
+"~"                 { return TILDE; }
+"<<"                { return LEFT_SHIFT; }
+">>"                { return RIGHT_SHIFT; }
+
 "("                 { return LPAREN; }
 ")"                 { return RPAREN; }
 "{"                 { return LBRACE; }
@@ -64,6 +92,8 @@ OCTAL       [0-7]
 
 ";"                 { return SEMICOLON; }
 ","                 { return COMMA; }
+"."                 { return DOT; }
+"->"                { return ARROW; }
 
 {LETTER}{ALNUM}*    { 
                         yylval.str = strdup(yytext); 
@@ -75,9 +105,49 @@ OCTAL       [0-7]
                         return INTEGER_LITERAL; 
                     }
 
+0[xX]{HEX}+         { 
+                        yylval.ival = strtol(yytext, NULL, 16); 
+                        return INTEGER_LITERAL; 
+                    }
+
+0{OCTAL}+           { 
+                        yylval.ival = strtol(yytext, NULL, 8); 
+                        return INTEGER_LITERAL; 
+                    }
+
+{DIGIT}+\.{DIGIT}+  { 
+                        yylval.fval = atof(yytext); 
+                        return FLOAT_LITERAL; 
+                    }
+
+\"([^\\\"]|\\.)*\"  { 
+                        yylval.str = strdup(yytext); 
+                        return STRING_LITERAL; 
+                    }
+
+'([^\\']|\\.)'      { 
+                        yylval.ival = yytext[1]; 
+                        return CHAR_LITERAL; 
+                    }
+
+"//".* { /* Single line comment */ }
+
+"/*"                { 
+                        int c;
+                        while ((c = yyinput()) != 0) {
+                            if (c == '\n') {
+                                line_num++;
+                                col_num = 1;
+                            } else if (c == '*') {
+                                if ((c = yyinput()) == '/') break;
+                                unput(c);
+                            }
+                        }
+                    }
+
 .                   { 
-                        fprintf(stderr, "Unknown character: %s at line %d\n", 
-                                yytext, line_num); 
+                        fprintf(stderr, "Lexical error: Unknown character '%s' at line %d, col %d\n", 
+                                yytext, line_num, col_num); 
                     }
 
 %%
