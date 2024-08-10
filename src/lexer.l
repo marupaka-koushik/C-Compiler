@@ -151,3 +151,20 @@ OCTAL       [0-7]
                     }
 
 %%
+
+void lexer_error(const char* msg) {
+    fprintf(stderr, "Lexer Error at line %d, col %d: %s\n", line_num, col_num, msg);
+}
+
+int get_line_number() {
+    return line_num;
+}
+
+int get_column_number() {
+    return col_num;
+}
+
+void reset_lexer() {
+    line_num = 1;
+    col_num = 1;
+}
