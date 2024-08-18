@@ -45,6 +45,16 @@ extern int line_num;
 %type <node> unary_expression postfix_expression primary_expression
 %type <node> argument_expression_list
 
+%right ASSIGN PLUS_ASSIGN MINUS_ASSIGN STAR_ASSIGN DIV_ASSIGN MOD_ASSIGN
+%left OR
+%left AND
+%left EQ NE
+%left LT GT LE GE
+%left PLUS MINUS
+%left STAR DIVIDE MOD
+%right NOT UMINUS
+%left LPAREN RPAREN LBRACKET RBRACKET DOT ARROW
+
 %start program
 
 %%
@@ -90,6 +100,7 @@ type_specifier
 
 declarator
     : direct_declarator
+    | STAR direct_declarator
     ;
 
 direct_declarator
@@ -99,6 +110,7 @@ direct_declarator
     | direct_declarator LPAREN RPAREN
     | direct_declarator LBRACKET INTEGER_LITERAL RBRACKET
     | direct_declarator LBRACKET RBRACKET
+    | LPAREN declarator RPAREN
     ;
 
 parameter_list
@@ -132,6 +144,115 @@ statement
 expression_statement
     : SEMICOLON
     | expression SEMICOLON
+    ;
+
+expression
+    : assignment_expression
+    | expression COMMA assignment_expression
+    ;
+
+assignment_expression
+    : conditional_expression
+    | unary_expression ASSIGN assignment_expression
+    | unary_expression PLUS_ASSIGN assignment_expression
+    | unary_expression MINUS_ASSIGN assignment_expression
+    | unary_expression STAR_ASSIGN assignment_expression
+    | unary_expression DIV_ASSIGN assignment_expression
+    | unary_expression MOD_ASSIGN assignment_expression
+    ;
+
+conditional_expression
+    : logical_or_expression
+    ;
+
+logical_or_expression
+    : logical_and_expression
+    | logical_or_expression OR logical_and_expression
+        { printf("Logical OR expression\n"); }
+    ;
+
+logical_and_expression
+    : equality_expression
+    | logical_and_expression AND equality_expression
+        { printf("Logical AND expression\n"); }
+    ;
+
+equality_expression
+    : relational_expression
+    | equality_expression EQ relational_expression
+        { printf("Equality expression\n"); }
+    | equality_expression NE relational_expression
+        { printf("Not-equal expression\n"); }
+    ;
+
+relational_expression
+    : additive_expression
+    | relational_expression LT additive_expression
+        { printf("Less-than expression\n"); }
+    | relational_expression GT additive_expression
+        { printf("Greater-than expression\n"); }
+    | relational_expression LE additive_expression
+        { printf("Less-equal expression\n"); }
+    | relational_expression GE additive_expression
+        { printf("Greater-equal expression\n"); }
+    ;
+
+additive_expression
+    : multiplicative_expression
+    | additive_expression PLUS multiplicative_expression
+        { printf("Addition expression\n"); }
+    | additive_expression MINUS multiplicative_expression
+        { printf("Subtraction expression\n"); }
+    ;
+
+multiplicative_expression
+    : unary_expression
+    | multiplicative_expression STAR unary_expression
+        { printf("Multiplication expression\n"); }
+    | multiplicative_expression DIVIDE unary_expression
+        { printf("Division expression\n"); }
+    | multiplicative_expression MOD unary_expression
+        { printf("Modulo expression\n"); }
+    ;
+
+unary_expression
+    : postfix_expression
+    | INC unary_expression
+        { printf("Pre-increment\n"); }
+    | DEC unary_expression
+        { printf("Pre-decrement\n"); }
+    | PLUS unary_expression
+    | MINUS unary_expression %prec UMINUS
+        { printf("Unary minus\n"); }
+    | NOT unary_expression
+        { printf("Logical NOT\n"); }
+    | STAR unary_expression
+        { printf("Dereference\n"); }
+    | AMPERSAND unary_expression
+        { printf("Address-of\n"); }
+    ;
+
+postfix_expression
+    : primary_expression
+    | postfix_expression LBRACKET expression RBRACKET
+        { printf("Array subscript\n"); }
+    | postfix_expression LPAREN RPAREN
+        { printf("Function call (no args)\n"); }
+    | postfix_expression LPAREN argument_expression_list RPAREN
+        { printf("Function call with args\n"); }
+    | postfix_expression DOT IDENTIFIER
+        { printf("Member access: .%s\n", $3); }
+    | postfix_expression ARROW IDENTIFIER
+        { printf("Pointer member access: ->%s\n", $3); }
+    | postfix_expression INC
+        { printf("Post-increment\n"); }
+    | postfix_expression DEC
+        { printf("Post-decrement\n"); }
+    ;
+
+argument_expression_list
+    : assignment_expression
+    | argument_expression_list COMMA assignment_expression
     ;
 
 primary_expression
