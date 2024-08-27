@@ -198,4 +198,104 @@ void emitIndexIfNeeded(TreeNode* node) {
             size_t dotPos = arrayName.find('.');
             string structName = arrayName.substr(0, dotPos);
             string memberName = arrayName.substr(dotPos + 1);
-// Function support enhanced
+            
+            // Look up struct definition
+            TreeNode* structNode = lookupSymbol(structName);
+            if (structNode && structNode->symbolTable.size() > 0) {
+                // Find the member in the struct's symbol table
+                for (const auto& [name, memberNode] : structNode->symbolTable) {
+                    if (name == memberName && memberNode->typeCategory == 2) {
+                        dimensions = memberNode->dimensions;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Flatten the indices if multi-dimensional
+        string flatIndex;
+        if (indices.size() > 1 && dimensions.size() > 1) {
+            flatIndex = flattenArrayIndex(arrayName, indices, dimensions);
+        } else {
+            flatIndex = indices.empty() ? "0" : indices[0];
+        }
+        
+        // Emit INDEX with flattened index
+        string temp = codeGen.newTemp();
+        codeGen.emit(TACOp::INDEX, temp, arrayName, flatIndex);
+        node->tacResult = temp;
+    }
+}
+
+%}
+
+
+%union {
+	TreeNode *node;
+    char *str;
+    int integer;
+    int intVal;
+}
+
+
+%token <node>
+    KEYWORD_AUTO KEYWORD_BOOL KEYWORD_BREAK KEYWORD_CASE KEYWORD_CHAR 
+    KEYWORD_CLASS KEYWORD_CONST KEYWORD_CONTINUE KEYWORD_DEFAULT KEYWORD_DELETE KEYWORD_DO 
+    KEYWORD_DOUBLE KEYWORD_ELSE KEYWORD_ENUM KEYWORD_EXTERN KEYWORD_FLOAT 
+    KEYWORD_FOR KEYWORD_GOTO KEYWORD_IF KEYWORD_INT 
+    KEYWORD_LONG KEYWORD_NEW KEYWORD_NULLPTR KEYWORD_PRIVATE KEYWORD_PROTECTED 
+    KEYWORD_PUBLIC KEYWORD_REGISTER KEYWORD_RETURN KEYWORD_SHORT KEYWORD_SIGNED KEYWORD_SIZEOF 
+    KEYWORD_STATIC KEYWORD_STRUCT KEYWORD_SWITCH KEYWORD_THIS KEYWORD_UNION
+    KEYWORD_TYPEDEF KEYWORD_UNSIGNED 
+    KEYWORD_VOID KEYWORD_VOLATILE KEYWORD_WHILE KEYWORD_UNTIL KEYWORD_PRINTF KEYWORD_SCANF TYPE_NAME TYPEDEF_NAME
+
+%token <node> INTEGER FLOAT CHAR STRING ID ELLIPSIS_OPERATOR BOOLEAN_LITERAL
+
+
+%token <str>
+    LBRACE RBRACE LBRACKET RBRACKET LPAREN RPAREN SEMICOLON COMMA COLON
+
+
+%token <str>
+    PLUS_OPERATOR MINUS_OPERATOR MULTIPLY_OPERATOR DIVIDE_OPERATOR MODULO_OPERATOR
+    DECREMENT_OPERATOR INCREMENT_OPERATOR
+
+
+%token <str>
+    ASSIGNMENT_OPERATOR PLUS_ASSIGN_OPERATOR MINUS_ASSIGN_OPERATOR MULTIPLY_ASSIGN_OPERATOR 
+    DIVIDE_ASSIGN_OPERATOR MODULO_ASSIGN_OPERATOR BITWISE_AND_ASSIGN_OPERATOR BITWISE_OR_ASSIGN_OPERATOR 
+    BITWISE_XOR_ASSIGN_OPERATOR RIGHT_SHIFT_ASSIGN_OPERATOR LEFT_SHIFT_ASSIGN_OPERATOR
+
+
+%token <str>
+    EQUALS_COMPARISON_OPERATOR NOT_EQUALS_OPERATOR GREATER_THAN_OPERATOR LESS_THAN_OPERATOR 
+    GREATER_THAN_OR_EQUAL_OPERATOR LESS_THAN_OR_EQUAL_OPERATOR
+
+
+%token <str>
+    LOGICAL_AND_OPERATOR LOGICAL_OR_OPERATOR LOGICAL_NOT_OPERATOR
+
+
+%token <str>
+    BITWISE_AND_OPERATOR BITWISE_OR_OPERATOR BITWISE_XOR_OPERATOR LEFT_SHIFT_OPERATOR 
+    RIGHT_SHIFT_OPERATOR BITWISE_NOT_OPERATOR 
+
+
+%token <str>
+    TERNARY_OPERATOR DOT_OPERATOR  SCOPE_RESOLUTION_OPERATOR  
+    POINTER_TO_MEMBER_DOT_OPERATOR POINTER_TO_MEMBER_ARROW_OPERATOR
+
+%type<node> translation_unit external_declaration function_definition constructor_function destructor_function struct_type_specifier
+
+%type<node> declaration declaration_specifiers declarator compound_statement struct_declaration_list M N  
+
+%type<node> storage_class_specifier type_specifier struct_or_union_specifier struct_or_union enum_specifier enumerator_list enumerator class_specifier member_declaration_list member_declaration access_specifier
+
+%type<node> struct_declaration struct_declarator_list specifier_qualifier_list type_qualifier constant_expression
+
+%type<node> type_qualifier_list parameter_type_list parameter_list parameter_declaration identifier_list type_name abstract_declarator
+
+%type<node> initializer initializer_list direct_declarator pointer reference direct_abstract_declarator assignment_expression 
+
+%type<node> statement labeled_statement expression_statement selection_statement iteration_statement jump_statement block_item block_item_list
+// Struct and enum declarations
