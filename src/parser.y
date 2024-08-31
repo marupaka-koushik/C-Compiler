@@ -298,4 +298,204 @@ void emitIndexIfNeeded(TreeNode* node) {
 %type<node> initializer initializer_list direct_declarator pointer reference direct_abstract_declarator assignment_expression 
 
 %type<node> statement labeled_statement expression_statement selection_statement iteration_statement jump_statement block_item block_item_list
-// Struct and enum declarations
+
+%type<node> expression init_declarator init_declarator_list conditional_expression primary_expression postfix_expression for_cond for_inc for_init
+
+%type<node> unary_expression unary_operator cast_expression multiplicative_expression additive_expression shift_expression
+
+%type<node> relational_expression equality_expression and_expression exclusive_or_expression inclusive_or_expression scope_resolution_statements
+
+%type<node> logical_and_expression logical_or_expression argument_expression_list assignment_operator io_statement scope_resolution_statement single_expression
+
+%start translation_unit
+
+%nonassoc NO_ELSE
+%nonassoc KEYWORD_ELSE
+%%
+
+N
+: {
+    $$ = new TreeNode(OTHERS);
+    $$->nextList.push_back(codeGen.currentInstrIndex);
+    codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+}
+
+primary_expression
+	: ID { 
+        $$ = $1; 
+        TreeNode* looked = lookupSymbol($$->valueToString());
+        
+        // If not found, keep the original ID node
+        if (looked == nullptr) {
+            $$->tacResult = $1->valueToString();
+            $$->isLValue = true;
+        }
+        // Handle enum constants
+        else if (looked->isConstant) {
+            $$ = looked;
+            // Treat enum constant as an integer literal
+            string temp = codeGen.newTemp();
+            codeGen.emit(TACOp::ASSIGN, temp, to_string($$->constantValue), nullopt);
+            $$->tacResult = temp;
+            $$->isLValue = false;
+        } else {
+            $$ = looked;
+            $$->tacResult = $1->valueToString();
+            $$->isLValue = true;
+        }
+    }
+	| INTEGER { 
+        $$ = $1;
+        string temp = codeGen.newTemp();
+        codeGen.emit(TACOp::ASSIGN, temp, $1->valueToString(), nullopt);
+        $$->tacResult = temp;
+        $$->typeSpecifier = 3; 
+        $$->isLValue = false;
+    }
+    | FLOAT { 
+        $$ = $1;
+        string temp = codeGen.newTemp();
+        codeGen.emit(TACOp::ASSIGN, temp, $1->valueToString(), nullopt);
+        $$->tacResult = temp;
+        $$->typeSpecifier = 6; 
+        $$->isLValue = false; 
+    }
+	| STRING { 
+        $$ = $1;
+        string temp = codeGen.newTemp();
+        codeGen.emit(TACOp::ASSIGN, temp, $1->valueToString(), nullopt);
+        $$->tacResult = temp; 
+        $$->typeSpecifier = 8; 
+        $$->isLValue = false; 
+    }
+	| CHAR { 
+        $$ = $1; 
+        string temp = codeGen.newTemp();
+        codeGen.emit(TACOp::ASSIGN, temp, $1->valueToString(), nullopt);
+        $$->tacResult = temp;
+        $$->typeSpecifier = 1; 
+        $$->isLValue = false; 
+    }
+    | BOOLEAN_LITERAL { 
+        $$ = $1;
+        $$->typeSpecifier=5;
+        string temp = codeGen.newTemp();
+        $$->tacResult = temp;
+        if($1->valueToString() == "true"){
+            $$->trueList.push_back(codeGen.currentInstrIndex);
+        }else{
+            $$->falseList.push_back(codeGen.currentInstrIndex);
+        }
+    } 
+    | KEYWORD_NULLPTR { 
+        $$ = $1;
+        $$->tacResult = "nullptr";
+        $$->typeSpecifier = 9; 
+        $$->isLValue = false; 
+    }
+    | KEYWORD_THIS { 
+        $$ = $1;
+        $$->tacResult = "this";
+        $$->isLValue = false;
+    }
+	| LPAREN expression RPAREN { 
+        $$ = $2;
+    }
+	;
+
+postfix_expression
+    : primary_expression { 
+        $$ = $1; 
+    }
+    | postfix_expression LBRACKET expression RBRACKET { 
+        $$ = createNode(NODE_POSTFIX_EXPRESSION, monostate(), $1, $3);
+        if ($3->typeSpecifier != 3) {
+            cerr << "Error: array index must be an integer" << endl;
+        } else if ($1->typeCategory == 2) {
+            $$->typeSpecifier = $1->typeSpecifier;
+            $$->isLValue = true;
+            $$->isArrayIndex = true;  // Mark this as array index expression
+            
+            // CRITICAL: Handle multi-dimensional arrays
+            // Copy dimensions from parent and remove the first one (we're indexing into it)
+            if (!$1->dimensions.empty()) {
+                $$->dimensions = vector<int>($1->dimensions.begin() + 1, $1->dimensions.end());
+                // If still have dimensions left, result is still an array
+                if (!$$->dimensions.empty()) {
+                    $$->typeCategory = 2;  // Still an array
+                } else {
+                    $$->typeCategory = 0;  // Now a scalar value
+                }
+            } else {
+                $$->typeCategory = 0;
+                $$->pointerLevel = 0;
+            }
+            
+            // Check if this is an array of pointers (e.g., int *arr[10])
+            if ($1->pointerLevel > 0) {
+                $$->typeCategory = 1;  // Result is a pointer
+                $$->pointerLevel = $1->pointerLevel;
+            }
+            
+            // Copy symbol table for array of structs
+            if ($1->typeSpecifier == 20 && $1->symbolTable.size() > 0) {
+                $$->symbolTable = $1->symbolTable;
+            }
+            
+            // For lvalue (assignment target), use array notation: arr[index]
+            // For rvalue (reading), emitIndexIfNeeded will emit INDEX instruction
+            // Store array notation in tacResult for proper member access and assignment
+            $$->tacResult = $1->tacResult + "[" + $3->tacResult + "]";
+        } else if ($1->typeCategory == 1 || $1->pointerLevel > 0) {
+            // Pointer indexing (including multi-level pointers like char**)
+            $$->typeSpecifier = $1->typeSpecifier;
+            $$->isLValue = true;
+            $$->isArrayIndex = true;  // Mark this as array/pointer index expression
+            
+            // If indexing a pointer to pointer (e.g., argv[0] where argv is char**)
+            // The result should be a pointer (e.g., char*)
+            if ($1->pointerLevel > 1) {
+                $$->typeCategory = 1;  // Still a pointer
+                $$->pointerLevel = $1->pointerLevel - 1;
+            } else if ($1->pointerLevel == 1) {
+                $$->typeCategory = 0;  // Now a value
+                $$->pointerLevel = 0;
+            } else {
+                $$->typeCategory = 0;
+                $$->pointerLevel = 0;
+            }
+            
+            // For lvalue (assignment target), use array notation: ptr[index]
+            // For rvalue (reading), emitIndexIfNeeded will emit INDEX instruction
+            // Store array notation in tacResult for proper member access and assignment
+            $$->tacResult = $1->tacResult + "[" + $3->tacResult + "]";
+        } else {
+            cerr << $1->valueToString() << " is not an array" << endl;
+        }
+    }
+    | postfix_expression LPAREN RPAREN { 
+        $$ = $1;
+        if ($$->paramCount > 0) {
+            cerr << "Error: function call with no params, expected " << $$->paramCount << endl;
+            YYABORT;
+        }else{
+            if($1->typeSpecifier == 0){
+                codeGen.emit(TACOp::CALL2, "", $1->tacResult , "0");
+            }else{
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::CALL, temp, $1->tacResult, "0");
+                $$->tacResult = temp;
+            }
+            $$->pointerLevel = $1->pointerLevel; // Copy pointer level from function signature
+            $$->isLValue = false;
+        } 
+    }
+    | postfix_expression LPAREN argument_expression_list RPAREN { 
+        $$ = createNode(NODE_POSTFIX_EXPRESSION, monostate(), $1, $3); 
+        $$->typeSpecifier = $1->typeSpecifier;
+        $$->pointerLevel = $1->pointerLevel; // Copy pointer level from function signature
+        $$->isLValue = false;
+        if ($1->typeCategory == 3) {
+            if ($1->paramCount == $3->children.size()) {
+                for (int i = 0; i < $1->paramCount; i++) {
+// Array and pointer support
