@@ -498,4 +498,204 @@ postfix_expression
         if ($1->typeCategory == 3) {
             if ($1->paramCount == $3->children.size()) {
                 for (int i = 0; i < $1->paramCount; i++) {
-// Array and pointer support
+                    int lhs = $1->paramTypes[i];
+                    int rhs = $3->children[i]->typeSpecifier;
+                    if (!isTypeCompatible(lhs, rhs, "=")) {
+                        cerr << "Expected: " << $1->paramTypes[i] << ", Got: " << $3->children[i]->typeSpecifier << endl;
+                        break;
+                    }else{
+                        // Only emit typecast if types differ AND it's not a pointer compatibility cast
+                        if(lhs != rhs){
+                            string castType = typeCastInfo(lhs, rhs);
+                            // Skip typecast for pointer conversions (ptr_cast) - they're compatible as-is
+                            if (castType != "ptr_cast") {
+                                string temp = codeGen.newTemp();
+                                codeGen.emit(TACOp::TYPECAST, temp, castType, $3->children[i]->tacResult);
+                                $3->children[i]->tacResult = temp;
+                            }
+                        }
+                    }
+                }
+            } else {
+                cerr << "Error: function call with " << $3->children.size() << " params, expected " << $1->paramCount << endl;
+                YYABORT;
+            }
+        }
+        for (auto* arg : $3->children) {
+            emitIndexIfNeeded(arg);  // Emit INDEX if argument is array access
+            codeGen.emit(TACOp::ASSIGN, "param", arg->tacResult, nullopt);
+        }
+        // Functions with void type AND no pointer level don't return a value (true void)
+        // But void* (typeSpec=0, ptrLevel=1) does return a value
+        if($1->typeSpecifier == 0 && $1->pointerLevel == 0){
+            codeGen.emit(TACOp::CALL2, "", $1->valueToString(), to_string($3->children.size()));
+        }else{
+            string temp = codeGen.newTemp();
+            codeGen.emit(TACOp::CALL, temp, $1->valueToString(), to_string($3->children.size()));
+            $$->tacResult = temp; 
+        }
+    }
+    | postfix_expression DOT_OPERATOR ID { 
+        $$ = createNode(NODE_POSTFIX_EXPRESSION, $2, $1, $3);
+        
+        // Check if using . on a pointer (should use -> instead)
+        if ($1->pointerLevel > 0) {
+            cerr << "Error: dot operator '.' cannot be used on pointers; use '->' instead" << endl;
+            YYABORT;
+        }
+        
+        if ($1->typeSpecifier == 20) {
+            // $1 is a struct (could be a variable like 'emp' or a nested member like 'emp.joinDate')
+            TreeNode* structInfo = nullptr;
+            
+            // Check if $1 already has a symbolTable (nested member access)
+            if ($1->symbolTable.size() > 0) {
+                // This is a nested access like emp.joinDate.day
+                // $1 already has the symbol table of the struct type
+                structInfo = $1;
+            } else {
+                // This is a first-level access like emp.id
+                // Look up the variable to get its symbol table
+                structInfo = lookupSymbol($1->tacResult);
+            }
+            
+            if (structInfo != nullptr && structInfo->symbolTable.size() > 0) {
+                // Now look for the member in the struct's symbol table
+                bool found = false;
+                int offset = 0;
+                for (auto entry : structInfo->symbolTable) {
+                    if (entry.first == $3->valueToString()) {
+                        // Found the member
+                        found = true;
+                        $$->typeSpecifier = entry.second->typeSpecifier;
+                        $$->typeCategory = entry.second->typeCategory;
+                        $$->pointerLevel = entry.second->pointerLevel;
+                        $$->storageClass = entry.second->storageClass;
+                        $$->isConst = entry.second->isConst;
+                        $$->isStatic = entry.second->isStatic;
+                        $$->isVolatile = entry.second->isVolatile;
+                        $$->isUnsigned = entry.second->isUnsigned;
+                        $$->isLValue = true;
+                        
+                        // Copy the symbol table if this member is also a struct
+                        if (entry.second->typeSpecifier == 20) {
+                            $$->symbolTable = entry.second->symbolTable;
+                        }
+                        
+                        // Copy dimensions if this member is an array
+                        if (entry.second->typeCategory == 2) {
+                            $$->dimensions = entry.second->dimensions;
+                        }
+                        
+                        // Generate member access: structVar.member
+                        $$->tacResult = $1->tacResult + "." + $3->valueToString();
+                        
+                        // Propagate basePointer for (*ptr).member chains
+                        if (!$1->basePointer.empty()) {
+                            $$->basePointer = $1->basePointer;
+                        }
+                        break;
+                    } else {
+                        // Calculate offset for this member (for future offset-based access)
+                        switch (entry.second->typeSpecifier) {
+                            case 1: offset += 1; break; // char
+                            case 2: offset += 2; break; // short  
+                            case 3: offset += 4; break; // int
+                            case 4: offset += 8; break; // long
+                            case 6: offset += 4; break; // float
+                            case 7: offset += 8; break; // double
+                            default: offset += 4; break;
+                        }
+                    }
+                }
+                if (!found) {
+                    cerr << "Error: member '" << $3->valueToString() << "' not found in struct" << endl;
+                    YYABORT;
+                }
+            } else {
+                cerr << "Error: variable '" << $1->tacResult << "' not found or is not a struct" << endl;
+                YYABORT;
+            }
+        } else {
+            cerr << "Error: member access operator '.' can only be used with structs, classes, or unions" << endl;
+            YYABORT;
+        }
+    }
+    | postfix_expression POINTER_TO_MEMBER_ARROW_OPERATOR ID { 
+        $$ = createNode(NODE_POSTFIX_EXPRESSION, $2, $1, $3);
+        // The arrow operator is for pointer-to-struct: ptr->member is equivalent to (*ptr).member
+        // $1 should be a pointer to a struct (typeSpecifier 20, pointerLevel > 0)
+        if ($1->pointerLevel > 0 && $1->typeSpecifier == 20) {
+            // Look up the pointer variable to get the struct type's symbol table
+            TreeNode* ptrInfo = nullptr;
+            if ($1->symbolTable.size() > 0) {
+                // Already has symbol table (nested access)
+                ptrInfo = $1;
+            } else {
+                // Look up the pointer variable
+                ptrInfo = lookupSymbol($1->tacResult);
+            }
+            
+            if (ptrInfo != nullptr && ptrInfo->symbolTable.size() > 0) {
+                // Find the member in the struct's symbol table
+                bool found = false;
+                for (auto entry : ptrInfo->symbolTable) {
+                    if (entry.first == $3->valueToString()) {
+                        found = true;
+                        $$->typeSpecifier = entry.second->typeSpecifier;
+                        $$->typeCategory = entry.second->typeCategory;
+                        $$->pointerLevel = entry.second->pointerLevel;
+                        $$->isLValue = true;
+                        
+                        // Copy symbol table if this member is also a struct
+                        if (entry.second->typeSpecifier == 20) {
+                            $$->symbolTable = entry.second->symbolTable;
+                        }
+                        
+                        // Generate proper 3AC for pointer member access
+                        $$->tacResult = $1->tacResult + "->" + $3->valueToString();
+                        break;
+                    }
+                }
+                if (!found) {
+                    cerr << "Error: member '" << $3->valueToString() << "' not found in pointed-to struct" << endl;
+                    YYABORT;
+                }
+            } else {
+                cerr << "Error: '" << $1->tacResult << "' is not a pointer to struct" << endl;
+                YYABORT;
+            }
+        } else {
+            cerr << "Error: arrow operator '->' requires a pointer to struct" << endl;
+            YYABORT;
+        }
+    }
+    | postfix_expression POINTER_TO_MEMBER_DOT_OPERATOR ID { 
+        $$ = createNode(NODE_POSTFIX_EXPRESSION, $2, $1, $3);
+        $$->isLValue = true;
+        string temp = codeGen.newTemp();
+        string memberAccess = $1->tacResult + ".*" + $3->valueToString();
+        codeGen.emit(TACOp::ASSIGN, temp, memberAccess, nullopt);
+        $$->tacResult = temp;
+    }
+    | postfix_expression INCREMENT_OPERATOR { 
+        if (!$1->isLValue) {  
+            cerr << "Error: Cannot post-increment an R-value at line " << yylineno << endl;
+        }
+        $$ = $1;
+        $$->type = NODE_POSTFIX_EXPRESSION;
+        int typeSpec = $1->typeSpecifier;
+        if (typeSpec == 5 || typeSpec > 7) {
+            cerr << "Error: invalid type for increment operator" << endl;
+        }
+        $$->isLValue = false; 
+        string temp = codeGen.newTemp();
+        codeGen.emit(TACOp::ASSIGN, temp, $1->tacResult, nullopt);
+        string temp2 = codeGen.newTemp();
+        codeGen.emit(TACOp::ADD, temp2, $1->tacResult, "1");
+        codeGen.emit(TACOp::ASSIGN, $1->tacResult, temp2, nullopt);
+        $$->tacResult = temp;
+    }
+    | postfix_expression DECREMENT_OPERATOR {
+        if (!$1->isLValue) {
+// Control flow TAC
