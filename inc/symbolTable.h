@@ -2010,4 +2010,4 @@ void printSymbolTables() {
 }
 
 
-#endif
+#endif// Function TAC generation
