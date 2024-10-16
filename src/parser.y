@@ -698,4 +698,304 @@ postfix_expression
     }
     | postfix_expression DECREMENT_OPERATOR {
         if (!$1->isLValue) {
-// Control flow TAC
+            cerr << "Error: Cannot post-decrement an R-value at line " << yylineno << endl;
+        } 
+        $$ = $1;
+        $$->type = NODE_POSTFIX_EXPRESSION;
+        int typeSpec = $1->typeSpecifier;
+        if (typeSpec == 5 || typeSpec > 7) {
+            cerr << "Error: invalid type for decrement operator" << endl;
+        }
+        $$->isLValue = false;
+        string temp = codeGen.newTemp();
+        codeGen.emit(TACOp::ASSIGN, temp, $1->tacResult, nullopt);
+        string temp2 = codeGen.newTemp();
+        codeGen.emit(TACOp::SUB, temp2, $1->tacResult, "1");
+        codeGen.emit(TACOp::ASSIGN, $1->tacResult, temp2, nullopt);
+        $$->tacResult = temp;
+    }
+    ;
+
+argument_expression_list
+    : assignment_expression { 
+        $$ = createNode(NODE_ARGUMENT_EXPRESSION_LIST, monostate(), $1); 
+    }
+    | argument_expression_list COMMA assignment_expression { 
+        $$ = $1;
+        $$->children.push_back($3);
+    }
+    ;
+
+unary_expression
+    : postfix_expression { 
+        $$ = $1; 
+        $$->type = NODE_UNARY_EXPRESSION;
+        $$->isLValue = $1->isLValue;
+        $$->isArrayIndex = $1->isArrayIndex;  // Preserve array index flag
+    }
+    | INCREMENT_OPERATOR unary_expression {
+        if (!$2->isLValue) {  
+            cerr << "Error: Cannot pre-increment an R-value at line " << yylineno << endl;
+        } 
+        $$ = $2;
+        codeGen.emit(TACOp::ADD, $2->tacResult, $2->tacResult, "1");
+        $$->tacResult = $2->tacResult;
+        int typeSpec = $2->typeSpecifier;
+        if (typeSpec == 5 || typeSpec > 7) {
+            cerr << "Error: invalid type for increment operator" << endl;
+        }
+        $$->isLValue = false; 
+    }
+    | DECREMENT_OPERATOR unary_expression {
+        if (!$2->isLValue) {
+            cerr << "Error: Cannot pre-decrement an R-value at line " << yylineno << endl;
+        }
+        $$ = $2;
+        codeGen.emit(TACOp::SUB, $2->tacResult, $2->tacResult, "1");
+        $$->tacResult = $2->tacResult;
+        int typeSpec = $2->typeSpecifier;
+        $$->isLValue = false; 
+        if (typeSpec == 5 || typeSpec > 7) {
+            cerr << "Error: invalid type for decrement operator" << endl;
+        }
+    }
+    | KEYWORD_SIZEOF LPAREN type_name RPAREN {
+        // sizeof(type) - return size of type in bytes
+        $$ = createNode(NODE_UNARY_EXPRESSION, monostate());
+        $$->typeSpecifier = 3;  // int
+        $$->isLValue = false;
+        
+        // Extract type information from type_name
+        TreeNode* typeNode = $3;
+        int typeSpec = 3;  // Default to int
+        int ptrLevel = 0;
+        
+        // type_name can be just specifier_qualifier_list or specifier_qualifier_list + abstract_declarator
+        if (typeNode->type == NODE_SPECIFIER_QUALIFIER_LIST) {
+            // Direct specifier_qualifier_list
+            if (!typeNode->children.empty() && typeNode->children[0]->type == NODE_TYPE_SPECIFIER) {
+                typeSpec = typeNode->children[0]->storageClass;
+            }
+        } else if (typeNode->type == NODE_TYPE_NAME && !typeNode->children.empty()) {
+            // type_name with children (specifier_qualifier_list + optional abstract_declarator)
+            TreeNode* firstChild = typeNode->children[0];
+            
+            if (firstChild->type == NODE_SPECIFIER_QUALIFIER_LIST && !firstChild->children.empty()) {
+                TreeNode* typeSpecNode = firstChild->children[0];
+                if (typeSpecNode->type == NODE_TYPE_SPECIFIER) {
+                    typeSpec = typeSpecNode->storageClass;
+                }
+            }
+            
+            // Check for pointer in abstract declarator
+            if (typeNode->children.size() > 1) {
+                TreeNode* absDecl = typeNode->children[1];
+                // abstract_declarator can be:
+                // 1. Just a pointer: abstract_declarator -> pointer
+                // 2. Wrapped pointer: abstract_declarator -> NODE_ABSTRACT_DECLARATOR -> pointer
+                if (absDecl->type == NODE_POINTER) {
+                    // Direct pointer (e.g., sizeof(char*))
+                    ptrLevel = 1;
+                } else if (absDecl->type == NODE_ABSTRACT_DECLARATOR && !absDecl->children.empty()) {
+                    if (absDecl->children[0]->type == NODE_POINTER) {
+                        ptrLevel = 1;
+                    }
+                }
+            }
+        }
+        
+        int size = 4;  // Default size
+        if (ptrLevel > 0) {
+            size = 8;  // Pointer size (64-bit)
+        } else {
+            switch(typeSpec) {
+                case 0: size = 0; break;  // void
+                case 1: size = 1; break;  // char
+                case 2: size = 2; break;  // short
+                case 3: size = 4; break;  // int
+                case 4: size = 4; break;  // long (32-bit)
+                case 12: size = 4; break;  // float
+                case 13: size = 8; break;  // double
+                case 7: size = 1; break;  // bool
+                default: size = 4; break;
+            }
+        }
+        
+        $$->tacResult = to_string(size);
+    }
+    | KEYWORD_SIZEOF unary_expression {
+        // sizeof(expression) - return size of expression's type
+        $$ = createNode(NODE_UNARY_EXPRESSION, monostate());
+        $$->typeSpecifier = 3;  // int
+        $$->isLValue = false;
+        
+        int typeSpec = $2->typeSpecifier;
+        int size = 4;  // Default size for element
+        
+        switch(typeSpec) {
+            case 1: size = 1; break;  // char
+            case 2: size = 2; break;  // short
+            case 3: size = 4; break;  // int
+            case 4: size = 4; break;  // long
+            case 5: size = 4; break;  // float
+            case 6: size = 8; break;  // double
+            case 7: size = 1; break;  // bool
+            default: size = 4; break;
+        }
+        
+        if ($2->pointerLevel > 0) {
+            size = 8;  // Pointer size
+        }
+        // Check if it's an array
+        else if ($2->typeCategory == 2 && !$2->dimensions.empty()) {
+            // Calculate total array size: element_size * product of all dimensions
+            int totalElements = 1;
+            for (int dim : $2->dimensions) {
+                if (dim > 0) {
+                    totalElements *= dim;
+                }
+            }
+            size = size * totalElements;
+        }
+        
+        $$->tacResult = to_string(size);
+    }
+    | unary_operator cast_expression { 
+        $$ = createNode(NODE_UNARY_EXPRESSION, monostate(), $1, $2);
+        $$->typeSpecifier = $2->typeSpecifier;
+        string temp = codeGen.newTemp();
+        string op = $1->valueToString();
+        if (op == "&") {
+            // Check if operand is an lvalue
+            if (!$2->isLValue) {
+                cerr << "Error: Cannot take address of non-lvalue (e.g., literal or rvalue)" << endl;
+                YYABORT;
+            }
+            
+            // If taking address of a multi-dimensional array access, flatten the indices first
+            string operand = $2->tacResult;
+            if ($2->isArrayIndex && $2->children.size() == 2) {
+                auto [arrayName, indices] = extractArrayIndices($2);
+                
+                // Look up array dimensions
+                TreeNode* arrayNode = lookupSymbol(arrayName);
+                vector<int> dimensions;
+                if (arrayNode && arrayNode->typeCategory == 2) {
+                    dimensions = arrayNode->dimensions;
+                }
+                
+                // Handle struct member arrays (e.g., g.matrix)
+                if (dimensions.empty() && arrayName.find('.') != string::npos) {
+                    size_t dotPos = arrayName.find('.');
+                    string structName = arrayName.substr(0, dotPos);
+                    string memberName = arrayName.substr(dotPos + 1);
+                    
+                    TreeNode* structNode = lookupSymbol(structName);
+                    if (structNode && structNode->symbolTable.size() > 0) {
+                        for (const auto& [name, memberNode] : structNode->symbolTable) {
+                            if (name == memberName && memberNode->typeCategory == 2) {
+                                dimensions = memberNode->dimensions;
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // Flatten indices if multi-dimensional
+                if (indices.size() > 1 && dimensions.size() > 1) {
+                    string flatIndex = flattenArrayIndex(arrayName, indices, dimensions);
+                    operand = arrayName + "[" + flatIndex + "]";
+                } else if (!indices.empty()) {
+                    operand = arrayName + "[" + indices[0] + "]";
+                }
+            }
+            
+            codeGen.emit(TACOp::ASSIGN, temp, "&" + operand, nullopt);
+            $$->isLValue = false;
+            $$->pointerLevel = $2->pointerLevel + 1;
+            $$->typeCategory = 1;  // Result is a pointer
+        } else if (op == "*") {
+            // Check if operand is a pointer
+            if ($2->pointerLevel <= 0) {
+                cerr << "Error: Cannot dereference non-pointer type (pointer level: " << $2->pointerLevel << ")" << endl;
+                YYABORT;
+            }
+            codeGen.emit(TACOp::ASSIGN, temp, "*" + $2->tacResult, nullopt);
+            $$->isLValue = true;
+            $$->pointerLevel = $2->pointerLevel - 1;
+            // Set typeCategory based on resulting pointer level
+            if ($$->pointerLevel > 0) {
+                $$->typeCategory = 1;  // Still a pointer
+            } else {
+                $$->typeCategory = 0;  // Now a value
+            }
+            
+            // If dereferencing a pointer to struct, copy the symbol table
+            // so that member access (*ptr).member can work
+            // Also store the original pointer for assignment tracking
+            if ($2->typeSpecifier == 20 && $2->symbolTable.size() > 0) {
+                $$->symbolTable = $2->symbolTable;
+                $$->basePointer = $2->tacResult;  // Store original pointer variable
+            }
+        } else if (op == "+") {
+            codeGen.emit(TACOp::ASSIGN, temp, $2->tacResult, nullopt);
+            $$->isLValue = false;
+        } else if (op == "-") {
+            codeGen.emit(TACOp::SUB, temp, "0", $2->tacResult);
+            $$->isLValue = false;
+        } else if (op == "~") {
+            codeGen.emit(TACOp::BIT_XOR, temp, $2->tacResult, "-1");
+            $$->falseList = $2->falseList;
+            $$->trueList = $2->trueList;
+            $$->isLValue = false;
+        } else if (op == "!") {
+            // Logical NOT: DON'T swap lists, just invert the comparison operator
+            // The comparison should jump when the NOT condition is TRUE
+            // For !(a == b), we want "if a != b goto TRUE_BLOCK"
+            $$->trueList = $2->trueList;  // Keep trueList as-is
+            $$->falseList = $2->falseList;  // Keep falseList as-is
+            
+            // Invert ONLY the comparison operators in trueList (the conditional jumps)
+            for (int idx : $$->trueList) {
+                if (idx >= 0 && idx < codeGen.tacCode.size()) {
+                    TACInstruction& instr = codeGen.tacCode[idx];
+                    // Invert the comparison operator
+                    switch (instr.op) {
+                        case TACOp::EQ: instr.op = TACOp::NE; break;
+                        case TACOp::NE: instr.op = TACOp::EQ; break;
+                        case TACOp::LT: instr.op = TACOp::GE; break;
+                        case TACOp::GE: instr.op = TACOp::LT; break;
+                        case TACOp::GT: instr.op = TACOp::LE; break;
+                        case TACOp::LE: instr.op = TACOp::GT; break;
+                        default: break;  // Not a comparison, leave as-is (e.g., unconditional goto)
+                    }
+                }
+            }
+            // Don't invert falseList - it contains unconditional gotos which shouldn't change
+            
+            // Only emit comparison if operand doesn't have control flow lists
+            if ($2->trueList.empty() && $2->falseList.empty()) {
+                codeGen.emit(TACOp::EQ, "", $2->tacResult, "0", true);  // Use "" for result, set isGoto=true
+                backTrackRelExpr($$);
+            } else {
+                // Operand is a boolean expression with control flow
+                // Just use its tacResult (may be empty for pure control flow)
+                temp = $2->tacResult;
+            }
+            $$->isLValue = false;
+        }
+        $$->tacResult = temp;         
+        if (op == "&" && !$2->isLValue) {
+            cerr << "Error: Cannot apply '&' to an R-value at line " << yylineno << endl;
+        } else if (op == "*" && $2->pointerLevel == 0) {
+            cerr << "Error: Cannot dereference a non-pointer type at line " << yylineno << endl;
+        }
+    }
+    ;
+
+
+
+unary_operator
+	: BITWISE_AND_OPERATOR { $$ = createNode(NODE_UNARY_OPERATOR, $1); }
+	| MULTIPLY_OPERATOR { $$ = createNode(NODE_UNARY_OPERATOR, $1); }
+// Pointer TAC
