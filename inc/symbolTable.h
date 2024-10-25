@@ -2012,3 +2012,4 @@ void printSymbolTables() {
 
 #endif// Function TAC generation
 // Struct access TAC
+// Type checking enhancements
