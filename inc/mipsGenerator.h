@@ -498,3 +498,504 @@ void MIPSGenerator::genStructMemberLoad(const string& destReg, const string& var
         
         // Members grow in POSITIVE direction (toward higher addresses)
         // If ptr points to $fp-48, and y is at offset +4, then ptr->y is at ($fp-48)+4 = $fp-44
+        if (memberOffset == 0) {
+            mipsCode.push_back("    lw " + destReg + ", 0(" + ptrReg + ")  # Load " + var);
+        } else {
+            mipsCode.push_back("    lw " + destReg + ", " + to_string(memberOffset) + "(" + ptrReg + ")  # Load " + var);
+        }
+    } else {
+        // Dot operator: struct.member
+        // Load from stack at base offset + member offset
+        // Stack grows down: if struct is at $fp-656 and member is at offset +4 within struct,
+        // then member is at address ($fp-656) + 4 = $fp-652
+        // So we use offset (656 - 4) = 652
+        int baseOffset = getVarOffset(baseName);
+        int memberOffsetValue = getStructMemberOffset(baseName, memberName);
+        int totalOffset = baseOffset - memberOffsetValue;  // Subtract because we negate the whole offset
+        mipsCode.push_back("    lw " + destReg + ", -" + to_string(totalOffset) + "($fp)  # Load " + var);
+    }
+}
+
+// Store a value into a struct member
+void MIPSGenerator::genStructMemberStore(const string& var, const string& srcReg) {
+    string baseName, memberName;
+    bool isArrow;
+    
+    if (!isStructMemberAccess(var, baseName, memberName, isArrow)) {
+        // Not a struct member access, shouldn't happen
+        return;
+    }
+    
+    // Check if baseName is an array access (e.g., "pts[i]" in "pts[i].x")
+    // This is an array of structs
+    size_t baseArrayBracket = baseName.find('[');
+    if (baseArrayBracket != string::npos) {
+        // Array of structs: arrayName[index].member = value
+        string arrayName = baseName.substr(0, baseArrayBracket);
+        size_t closeBracket = baseName.find(']', baseArrayBracket);
+        string indexVar = baseName.substr(baseArrayBracket + 1, closeBracket - baseArrayBracket - 1);
+        
+        // Get member offset within struct
+        int memberOffset = getStructMemberOffset(arrayName, memberName);
+        
+        // Get base address of array
+        int arrayBaseOffset = getVarOffset(arrayName);
+        
+        // Determine struct size - for Point it's 8 bytes (2 ints)
+        int structSize = 8;  // Default: assume struct with 2 ints
+        if (arrayName.find("Node") != string::npos || arrayName.find("node") != string::npos) {
+            structSize = 12;  // Node has val(4) + padding + next(4) = 12 bytes aligned
+        }
+        
+        // Save source value to safe register before we compute offset
+        // Use $s5 to avoid conflicts with offset calculation
+        string valueReg = "$s5";
+        if (srcReg != valueReg) {
+            mipsCode.push_back("    move " + valueReg + ", " + srcReg + "  # Save value to store");
+        }
+        
+        // Load index
+        string indexReg = getReg(indexVar);
+        
+        // Calculate offset: index * structSize + memberOffset
+        string offsetReg = "$s7";
+        
+        // Shift left by log2(structSize)
+        if (structSize == 8) {
+            mipsCode.push_back("    sll " + offsetReg + ", " + indexReg + ", 3  # offset = index * 8 (struct size)");
+        } else if (structSize == 4) {
+            mipsCode.push_back("    sll " + offsetReg + ", " + indexReg + ", 2  # offset = index * 4");
+        } else {
+            // For non-power-of-2 sizes, use multiply
+            mipsCode.push_back("    li $v1, " + to_string(structSize) + "  # struct size");
+            mipsCode.push_back("    mul " + offsetReg + ", " + indexReg + ", $v1  # offset = index * struct_size");
+        }
+        
+        // Add member offset if non-zero
+        if (memberOffset > 0) {
+            mipsCode.push_back("    addiu " + offsetReg + ", " + offsetReg + ", " + to_string(memberOffset) + "  # add member offset");
+        }
+        
+        // Load base address and add offset
+        string baseReg = "$s6";
+        mipsCode.push_back("    la " + baseReg + ", -" + to_string(arrayBaseOffset) + "($fp)  # base of " + arrayName);
+        mipsCode.push_back("    add " + baseReg + ", " + baseReg + ", " + offsetReg);
+        
+        // Store value using the saved register
+        mipsCode.push_back("    sw " + valueReg + ", 0(" + baseReg + ")  # Store to " + var);
+        return;
+    }
+    
+    // Check if memberName is an array access (e.g., "data[i]")
+    size_t bracketPos = memberName.find('[');
+    if (bracketPos != string::npos) {
+        // Array access within struct: base.array[index] = value
+        string arrayMemberName = memberName.substr(0, bracketPos);
+        size_t closeBracket = memberName.find(']', bracketPos);
+        string indexVar = memberName.substr(bracketPos + 1, closeBracket - bracketPos - 1);
+        
+        // Get offset of array member within struct
+        int arrayOffset = getStructMemberOffset(baseName, arrayMemberName);
+        
+        // Get base address of struct
+        int structBaseOffset = getVarOffset(baseName);
+        
+        // Calculate: base address + array offset + (index * element_size)
+        bool isCharArray = (arrayMemberName.find("char") != string::npos ||
+                           arrayMemberName.find("Char") != string::npos);
+        int elementSize = isCharArray ? 1 : 4;
+        
+        // Load index
+        string indexReg = getReg(indexVar);
+        
+        // Calculate offset: index * elementSize
+        string offsetReg = "$s7";
+        if (elementSize == 1) {
+            mipsCode.push_back("    move " + offsetReg + ", " + indexReg + "  # offset = index (char array)");
+        } else {
+            mipsCode.push_back("    sll " + offsetReg + ", " + indexReg + ", 2  # offset = index * 4");
+        }
+        
+        // Calculate total offset from struct base
+        int totalStructOffset = structBaseOffset + arrayOffset;
+        
+        // Load base address and add offsets
+        string baseReg = "$s6";
+        mipsCode.push_back("    la " + baseReg + ", -" + to_string(totalStructOffset) + "($fp)  # base of " + baseName + "." + arrayMemberName);
+        mipsCode.push_back("    add " + baseReg + ", " + baseReg + ", " + offsetReg);
+        
+        // Store value
+        if (isCharArray) {
+            mipsCode.push_back("    sb " + srcReg + ", 0(" + baseReg + ")  # Store to " + var);
+        } else {
+            mipsCode.push_back("    sw " + srcReg + ", 0(" + baseReg + ")  # Store to " + var);
+        }
+        return;
+    }
+    
+    int memberOffset = getStructMemberOffset(baseName, memberName);
+    
+    if (isArrow) {
+        // Arrow operator: ptr->member = value
+        // Load the pointer value into a dedicated register, then store value
+        // CRITICAL: Use $s6 for pointer to avoid conflicts with srcReg
+        string ptrReg = "$s6";
+        int ptrOffset = getVarOffset(baseName);
+        mipsCode.push_back("    lw " + ptrReg + ", -" + to_string(ptrOffset) + "($fp)  # Load pointer " + baseName);
+        
+        // Members grow in POSITIVE direction (toward higher addresses)
+        // If ptr points to $fp-48, and y is at offset +4, then ptr->y is at ($fp-48)+4 = $fp-44
+        if (memberOffset == 0) {
+            mipsCode.push_back("    sw " + srcReg + ", 0(" + ptrReg + ")  # " + var + " = value");
+        } else {
+            mipsCode.push_back("    sw " + srcReg + ", " + to_string(memberOffset) + "(" + ptrReg + ")  # " + var + " = value");
+        }
+    } else {
+        // Dot operator: struct.member = value
+        // Store to stack at base offset + member offset
+        // Stack grows down: if struct is at $fp-48 and member is at +4 within struct,
+        // then member is at address ($fp-48) + 4 = $fp-44
+        // So we use offset (48 - 4) = 44
+        int baseOffset = getVarOffset(baseName);
+        int memberOffsetValue = getStructMemberOffset(baseName, memberName);
+        int totalOffset = baseOffset - memberOffsetValue;
+        mipsCode.push_back("    sw " + srcReg + ", -" + to_string(totalOffset) + "($fp)  # " + var + " = " + srcReg);
+    }
+}
+
+// Check if a variable is static
+bool MIPSGenerator::isStatic(const string& var) {
+    return staticVars.count(var) > 0;
+}
+
+// Get the label for a static variable
+// Returns the unique .data label generated during initialization
+string MIPSGenerator::getStaticLabel(const string& var) {
+    // If it's a global static, use plain name
+    if (globalStaticVars.count(var)) {
+        return var;
+    }
+    
+    // Local static: look up the cached label for this function_var combination
+    string contextKey = currentFunc + "_" + var;
+    if (staticVarLabels.count(contextKey)) {
+        return staticVarLabels[contextKey];
+    }
+    
+    // Fallback: if not found, might be a global static we missed
+    // or a variable accessed before proper initialization
+    return var;
+}
+
+// Select register to spill based on next-use analysis
+string MIPSGenerator::selectRegisterToSpill(int instrIndex) {
+    string bestReg = tempRegs[0];  // Default fallback
+    int maxNextUse = -1;
+    
+    // Find register whose variable has the furthest next-use or is dead
+    for (const auto& reg : tempRegs) {
+        if (regDesc.isEmpty(reg)) continue;  // Skip empty registers
+        
+        string var = regDesc.get(reg);
+        int nextUse = getNextUse(var, instrIndex);
+        
+        // Prefer dead variables (nextUse == -1) or furthest next-use
+        if (nextUse == -1) {
+            // Dead variable - best candidate for spilling
+            return reg;
+        }
+        
+        if (nextUse > maxNextUse) {
+            maxNextUse = nextUse;
+            bestReg = reg;
+        }
+    }
+    
+    return bestReg;
+}
+
+// Spill a register to memory
+void MIPSGenerator::spillRegister(const string& reg) {
+    string var = regDesc.get(reg);
+    if (var.empty()) return;  // Register is empty
+    
+    // Save to memory
+    if (isStatic(var)) {
+        // Static variables are stored to .data section with unique labels
+        string label = getStaticLabel(var);
+        mipsCode.push_back("    la $s4, " + label + "  # Load address of static " + var);
+        mipsCode.push_back("    sw " + reg + ", 0($s4)  # Spill " + var + " to static");
+    } else if (isGlobalVar(var)) {
+        // Global variables are stored to .data section using la
+        // Use $s4 for address loading (saved register, won't interfere with temps)
+        mipsCode.push_back("    la $s4, " + var + "  # Load address of global " + var);
+        mipsCode.push_back("    sw " + reg + ", 0($s4)  # Spill " + var + " to global");
+    } else {
+        // Local variables are stored on the stack
+        int offset = getVarOffset(var);
+        mipsCode.push_back("    sw " + reg + ", -" + to_string(offset) + "($fp)  # Spill " + var);
+    }
+    
+    // Update descriptors
+    addrDesc.removeLocation(var, reg);
+    addrDesc.addLocation(var, "memory");
+    regDesc.clear(reg);
+}
+
+// Check if operand is an immediate value (number)
+bool MIPSGenerator::isImmediate(const string& operand) {
+    if (operand.empty()) return false;
+    
+    // Check for character constants like 'H', '\n', etc.
+    if (operand[0] == '\'') {
+        return true;  // Character constants are treated as immediate integer values
+    }
+    
+    if (operand[0] == '-' || isdigit(operand[0])) {
+        // Check if all chars are digits (or first is -)
+        for (size_t i = 1; i < operand.length(); i++) {
+            if (!isdigit(operand[i]) && operand[i] != '.') return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Check if operand is a string/char literal
+bool MIPSGenerator::isLiteral(const string& operand) {
+    if (operand.empty()) return false;
+    // Only string literals (with double quotes) are treated as literals
+    // Character constants (with single quotes) are treated as immediates
+    return (operand[0] == '"');
+}
+
+// Sanitize operand (remove quotes, handle special chars)
+string MIPSGenerator::sanitizeOperand(const string& operand) {
+    if (operand.length() >= 2 && operand[0] == '"' && operand.back() == '"') {
+        return operand;  // Keep quotes for string literals
+    }
+    if (operand.length() >= 2 && operand[0] == '\'' && operand.back() == '\'') {
+        // Character literal - convert to ASCII value
+        char c = operand[1];
+        if (operand[1] == '\\' && operand.length() >= 4) {
+            // Escape sequence
+            switch (operand[2]) {
+                case 'n': c = '\n'; break;
+                case 't': c = '\t'; break;
+                case 'r': c = '\r'; break;
+                case '0': c = '\0'; break;
+                case '\\': c = '\\'; break;
+                case '\'': c = '\''; break;
+                default: c = operand[2]; break;
+            }
+        }
+        return to_string((int)c);
+    }
+    return operand;
+}
+
+// Compute next-use information for all variables at each instruction
+void MIPSGenerator::computeNextUse(const vector<TACInstruction>& tacCode) {
+    nextUseMap.clear();
+    
+    // Optimization: limit analysis for very large programs
+    // This prevents hanging on complex files
+    if (tacCode.size() > 5000) {
+        // For very large files, skip next-use analysis (fallback to simple allocation)
+        cerr << "Warning: Skipping next-use analysis for large file (" << tacCode.size() << " instructions)" << endl;
+        return;
+    }
+    
+    // For each instruction, track the next use of each variable
+    map<string, int> lastUse;  // variable -> last instruction index where it was used
+    
+    // Process instructions backward with progress for large files
+    int progressInterval = tacCode.size() / 10;  // Report every 10%
+    
+    for (int i = tacCode.size() - 1; i >= 0; i--) {
+        // Progress indicator for large files
+        if (tacCode.size() > 500 && progressInterval > 0 && i % progressInterval == 0) {
+            cerr << "  Next-use analysis: " << (100 - (i * 100 / tacCode.size())) << "% complete..." << endl;
+        }
+        
+        const TACInstruction& instr = tacCode[i];
+        
+        // Mark variables used in this instruction (update lastUse map)
+        auto markUse = [&](const optional<string>& var) {
+            if (var.has_value() && !var->empty() && !isImmediate(*var) && !isLiteral(*var)) {
+                lastUse[*var] = i;
+            }
+        };
+        
+        // Check operands based on instruction type
+        if (instr.op == TACOp::ASSIGN) {
+            markUse(instr.operand1);
+            markUse(instr.operand2);
+        } else if (instr.op == TACOp::ADD || instr.op == TACOp::SUB || instr.op == TACOp::MUL || 
+                   instr.op == TACOp::DIV || instr.op == TACOp::MOD || instr.op == TACOp::BIT_AND || 
+                   instr.op == TACOp::BIT_OR || instr.op == TACOp::BIT_XOR || instr.op == TACOp::LSHFT || 
+                   instr.op == TACOp::RSHFT) {
+            markUse(instr.operand1);
+            markUse(instr.operand2);
+        } else if (instr.op == TACOp::LT || instr.op == TACOp::GT || instr.op == TACOp::LE || 
+                   instr.op == TACOp::GE || instr.op == TACOp::EQ || instr.op == TACOp::NE) {
+            markUse(instr.operand1);
+            markUse(instr.operand2);
+        } else if (instr.op == TACOp::GOTO) {
+            // No operands to mark
+        } else if (instr.op == TACOp::IF_EQ || instr.op == TACOp::IF_NE) {
+            markUse(instr.operand1);
+        } else if (instr.op == TACOp::LABEL) {
+            // No operands to mark
+        } else if (instr.op == TACOp::CALL || instr.op == TACOp::CALL2) {
+            // Arguments handled separately
+        } else if (instr.op == TACOp::RETURN) {
+            if (!instr.result.empty()) {
+                lastUse[instr.result] = i;
+            }
+        } else if (instr.op == TACOp::INDEX || instr.op == TACOp::ARR_INDEX) {
+            markUse(instr.operand1);
+            markUse(instr.operand2);
+        } else if (instr.op == TACOp::ARRAY_STORE) {
+            markUse(instr.operand1);
+            markUse(instr.operand2);
+            if (!instr.result.empty()) {
+                lastUse[instr.result] = i;
+            }
+        }
+        
+        // Store next-use info for this instruction (only store relevant variables)
+        NextUseInfo info;
+        for (const auto& entry : lastUse) {
+            if (entry.second > i) {
+                info.nextUse[entry.first] = entry.second - i;
+            } else {
+                info.nextUse[entry.first] = -1;  // Dead
+            }
+        }
+        nextUseMap[i] = info;
+    }
+}
+
+// Get next-use distance for a variable at given instruction
+int MIPSGenerator::getNextUse(const string& var, int instrIndex) {
+    if (nextUseMap.count(instrIndex) && nextUseMap[instrIndex].nextUse.count(var)) {
+        return nextUseMap[instrIndex].nextUse[var];
+    }
+    return -1;  // Assume dead if no info
+}
+
+// Get register for a variable (with register allocation)
+string MIPSGenerator::getReg(const string& var) {
+    // Check if this is a struct member access (e.g., "pt.x" or "ptr->y")
+    string baseName, memberName;
+    bool isArrow;
+    if (isStructMemberAccess(var, baseName, memberName, isArrow)) {
+        // Use a temporary register to load the struct member
+        string tempReg = "$v1";  // Use $v1 for struct member loads
+        genStructMemberLoad(tempReg, var);
+        return tempReg;
+    }
+    
+    // Check if this is an array access (e.g., "intArr[t12]")
+    size_t bracketPos = var.find('[');
+    if (bracketPos != string::npos) {
+        // Parse array name and index
+        string arrayName = var.substr(0, bracketPos);
+        size_t closeBracket = var.find(']', bracketPos);
+        string indexVar = var.substr(bracketPos + 1, closeBracket - bracketPos - 1);
+        
+        // Detect if this is a char array
+        bool isCharArray = (arrayName.find("char") != string::npos || 
+                           arrayName.find("Char") != string::npos ||
+                           arrayName.find("str") != string::npos);
+        
+        // Get index register
+        string indexReg = getReg(indexVar);
+        
+        // Use scratch registers for array access
+        string offsetReg = "$s7";
+        string baseReg = "$s6";
+        string resultReg = "$v1";  // Result goes in $v1
+        
+        // Calculate offset based on element size
+        if (isCharArray) {
+            // For char arrays, offset = index * 1 (no shift needed)
+            mipsCode.push_back("    move " + offsetReg + ", " + indexReg + "  # offset = index (char array)");
+        } else {
+            // For int arrays, offset = index * 4
+            mipsCode.push_back("    sll " + offsetReg + ", " + indexReg + ", 2  # offset = index * 4");
+        }
+        
+        // Get base address of array
+        int arrayOffset = getVarOffset(arrayName);
+        mipsCode.push_back("    la " + baseReg + ", -" + to_string(arrayOffset) + "($fp)  # base address of " + arrayName);
+        
+        // Add offset to base
+        mipsCode.push_back("    add " + baseReg + ", " + baseReg + ", " + offsetReg);
+        
+        // Load value (lb for char, lw for int)
+        if (isCharArray) {
+            mipsCode.push_back("    lb " + resultReg + ", 0(" + baseReg + ")  # " + var);
+        } else {
+            mipsCode.push_back("    lw " + resultReg + ", 0(" + baseReg + ")  # " + var);
+        }
+        
+        // Mark that this temp is in resultReg (don't track array[index] as a variable)
+        return resultReg;
+    }
+    
+    // Check if variable is already in a register
+    string reg = addrDesc.getRegister(var);
+    if (!reg.empty()) {
+        return reg;
+    }
+    
+    // Find an empty register
+    for (const auto& r : tempRegs) {
+        if (regDesc.isEmpty(r)) {
+            // Load variable from memory
+            if (isStatic(var)) {
+                // Static variables are loaded from .data section with unique labels
+                string label = getStaticLabel(var);
+                mipsCode.push_back("    la $s5, " + label + "  # Load address of static " + var);
+                mipsCode.push_back("    lw " + r + ", 0($s5)  # Load value from static");
+            } else if (isGlobalVar(var)) {
+                // Global variables are loaded from .data section using la
+                // Use $s5 for address loading (saved register, won't interfere with temps)
+                mipsCode.push_back("    la $s5, " + var + "  # Load address of global " + var);
+                mipsCode.push_back("    lw " + r + ", 0($s5)  # Load value from global");
+            } else if (addrDesc.getLocations(var).count("memory")) {
+                int offset = getVarOffset(var);
+                mipsCode.push_back("    lw " + r + ", -" + to_string(offset) + "($fp)  # Load " + var);
+            }
+            // Update descriptors
+            regDesc.set(r, var);
+            addrDesc.addLocation(var, r);
+            return r;
+        }
+    }
+    
+    // No empty registers - use next-use based spill strategy
+    string regToSpill = selectRegisterToSpill(currentInstrIndex);
+    spillRegister(regToSpill);
+    
+    // Load variable from memory
+    if (isStatic(var)) {
+        // Static variables are loaded from .data section with unique labels
+        string label = getStaticLabel(var);
+        mipsCode.push_back("    la $s5, " + label + "  # Load address of static " + var);
+        mipsCode.push_back("    lw " + regToSpill + ", 0($s5)  # Load value from static");
+    } else if (isGlobalVar(var)) {
+        // Global variables are loaded from .data section using la
+        // Use $s5 for address loading (saved register, won't interfere with temps)
+        mipsCode.push_back("    la $s5, " + var + "  # Load address of global " + var);
+        mipsCode.push_back("    lw " + regToSpill + ", 0($s5)  # Load value from global");
+    } else if (addrDesc.getLocations(var).count("memory")) {
+        int offset = getVarOffset(var);
+        mipsCode.push_back("    lw " + regToSpill + ", -" + to_string(offset) + "($fp)  # Load " + var);
+    }
+    
+    // Update descriptors
+    regDesc.set(regToSpill, var);
+// Register allocation logic
