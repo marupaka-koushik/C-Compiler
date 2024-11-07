@@ -998,4 +998,504 @@ string MIPSGenerator::getReg(const string& var) {
     
     // Update descriptors
     regDesc.set(regToSpill, var);
-// Register allocation logic
+    addrDesc.addLocation(var, regToSpill);
+    return regToSpill;
+}
+
+// Get register for a temporary (optimized for temps)
+string MIPSGenerator::getRegForTemp(const string& temp) {
+    // For temporaries, we prefer to keep them in registers
+    return getReg(temp);
+}
+
+// Generate function prologue
+void MIPSGenerator::emitProlog(const string& funcName, int localVarCount) {
+    mipsCode.push_back("");
+    mipsCode.push_back("# Function: " + funcName);
+    mipsCode.push_back(funcName + ":");
+    
+    // Clear pointer parameter tracking from previous function call
+    // (parameters from the CALLER are now available to THIS function)
+    // NOTE: Do NOT clear here - we need pointerParams from the caller!
+    // pointerParams will be cleared when we start building the NEXT function call
+    
+    // Save frame pointer
+    mipsCode.push_back("    sw $fp, 0($sp)");
+    
+    // Set new frame pointer
+    mipsCode.push_back("    move $fp, $sp");
+    
+    // Allocate space for locals and temps (estimate)
+    // Use larger frame size to accommodate multi-dimensional arrays
+    // 2048 bytes = 512 int variables or multiple large arrays + locals
+    frameSize = 2048;  // Increased for multi-dimensional arrays
+    mipsCode.push_back("    addiu $sp, $sp, -" + to_string(frameSize));
+    
+    // Save return address
+    mipsCode.push_back("    sw $ra, -4($fp)");
+    
+    // CRITICAL: Clear varOffsets for this function to prevent collisions with previous functions
+    varOffsets.clear();
+    
+    // For main function, save argc and argv from $a0 and $a1
+    if (funcName == "main") {
+        mipsCode.push_back("    # Save command line arguments");
+        mipsCode.push_back("    sw $a0, -8($fp)   # Save argc");
+        mipsCode.push_back("    sw $a1, -12($fp)  # Save argv");
+        // Reserve space in varOffsets for argc and argv
+        varOffsets["argc"] = 8;   // Offset from $fp
+        varOffsets["argv"] = 12;
+        // Mark argv as a pointer (char**)
+        pointerVars.insert("argv");
+        pointerSizes["argv"] = 4;  // Points to char* array
+        // Start allocating variables after argc/argv
+        currentOffset = 12;
+        // Mark argc and argv as being in memory
+        addrDesc.addLocation("argc", "memory");
+        addrDesc.addLocation("argv", "memory");
+        currentOffset = 16;  // Start after argc, argv, ra, fp
+    } else {
+        // For other functions, start after $ra and potential parameters
+        // Reserve space for common parameter patterns (up to 2 pointer params)
+        currentOffset = 8;  // Start after $ra and first parameter slot
+    }
+    
+    // Save callee-saved registers (if needed)
+    // For simplicity, we'll save $s0-$s7 if we use them
+    
+    // Reset descriptors for new function to clear variables from previous functions
+    regDesc.clearAll();
+    // For non-main functions, clear everything
+    // For main, we already set up argc/argv above, so clear and re-add them
+    if (funcName == "main") {
+        // Clear and re-add argc/argv
+        addrDesc.clearAll();
+        addrDesc.addLocation("argc", "memory");
+        addrDesc.addLocation("argv", "memory");
+    } else {
+        addrDesc.clearAll();
+    }
+}
+
+// Generate function epilogue
+void MIPSGenerator::emitEpilog(const string& funcName) {
+    mipsCode.push_back("");
+    mipsCode.push_back("    # Function epilogue");
+    
+    // For main function, use exit syscall instead of jr $ra
+    if (funcName == "main") {
+        // Print the return value before exiting
+        mipsCode.push_back("    # Print return value from main");
+        mipsCode.push_back("    move $a0, $v0   # Move return value to $a0 for printing");
+        mipsCode.push_back("    li $v0, 1       # syscall 1: print_int");
+        mipsCode.push_back("    syscall");
+        mipsCode.push_back("    # Print newline");
+        mipsCode.push_back("    li $a0, 10      # ASCII code for newline");
+        mipsCode.push_back("    li $v0, 11      # syscall 11: print_char");
+        mipsCode.push_back("    syscall");
+        mipsCode.push_back("    # Exit");
+        mipsCode.push_back("    li $v0, 10      # syscall 10: exit");
+        mipsCode.push_back("    syscall");
+    } else {
+        // Restore return address
+        mipsCode.push_back("    lw $ra, -4($fp)");
+        
+        // Restore callee-saved registers (if we saved them)
+        
+        // Deallocate stack frame
+        mipsCode.push_back("    move $sp, $fp");
+        
+        // Restore old frame pointer
+        mipsCode.push_back("    lw $fp, 0($sp)");
+        
+        // Return
+        mipsCode.push_back("    jr $ra");
+    }
+}
+
+// Generate ASSIGN instruction
+void MIPSGenerator::genAssign(const TACInstruction& instr) {
+    string dest = instr.result;
+    string src = instr.operand1.value_or("");
+    
+    // Handle special cases
+    if (src.empty()) return;
+    
+    // Check for address-of operation (&var)
+    if (src[0] == '&') {
+        string var = src.substr(1);
+        
+        // Check if this is taking address of an array element like &arr[index]
+        size_t bracketPos = var.find('[');
+        if (bracketPos != string::npos) {
+            // Extract array name and index
+            string arrayName = var.substr(0, bracketPos);
+            size_t closeBracket = var.find(']', bracketPos);
+            string indexVar = var.substr(bracketPos + 1, closeBracket - bracketPos - 1);
+            
+            // Determine element size based on array type
+            int elementSize = 4; // Default for int arrays
+            bool isCharArray = (arrayName.find("char") != string::npos || 
+                               arrayName.find("Char") != string::npos);
+            if (isCharArray) {
+                elementSize = 1;
+            } else if (arrayName.find("pts") != string::npos || arrayName.find("Points") != string::npos || 
+                       arrayName.find("Point") != string::npos) {
+                // Array of Point structs (x, y) = 8 bytes
+                elementSize = 8;
+            } else if (arrayName.find("Node") != string::npos || arrayName.find("node") != string::npos) {
+                // Array of Node structs = 12 bytes
+                elementSize = 12;
+            }
+            
+            // Mark dest as a pointer
+            pointerVars.insert(dest);
+            pointerSizes[dest] = elementSize;
+            
+            // Compute address: base + index * elementSize
+            string indexReg = getReg(indexVar);
+            string destReg = getReg(dest);
+            int arrayOffset = getVarOffset(arrayName);
+            
+            if (elementSize == 1) {
+                // Char array: offset = index * 1
+                mipsCode.push_back("    la " + destReg + ", -" + to_string(arrayOffset) + "($fp)  # base of " + arrayName);
+                mipsCode.push_back("    add " + destReg + ", " + destReg + ", " + indexReg + "  # " + dest + " = &" + var);
+            } else {
+                // Int array: offset = index * 4
+                // Use scratch registers to avoid conflicts
+                mipsCode.push_back("    sll $s7, " + indexReg + ", 2  # offset = index * 4");
+                mipsCode.push_back("    la " + destReg + ", -" + to_string(arrayOffset) + "($fp)  # base of " + arrayName);
+                mipsCode.push_back("    add " + destReg + ", " + destReg + ", $s7  # " + dest + " = &" + var);
+            }
+            
+            addrDesc.addLocation(dest, destReg);
+            return;
+        }
+        
+        // Taking address of a regular variable (not array element)
+        int elementSize = 4; // Default to int size
+        if (var.find("char") != string::npos || var.find("Char") != string::npos) {
+            elementSize = 1;
+        }
+        
+        // Mark dest as a pointer and track the size of what it points to
+        pointerVars.insert(dest);
+        pointerSizes[dest] = elementSize;
+        
+        // Ensure the variable is in memory (allocate offset if needed)
+        int offset = getVarOffset(var);
+        
+        // If the variable is currently in a register, store it to memory
+        // BUT: descriptors might be stale after branches/jumps, so we check if variable
+        // is a non-temporary (which should always have a memory location)
+        string varReg = addrDesc.getRegister(var);
+        bool isNonTemp = !(var[0] == 't' && isdigit(var[1]));
+        
+        if (!varReg.empty() && !isNonTemp) {
+            // This is a temporary in a register - store it to memory
+            mipsCode.push_back("    sw " + varReg + ", -" + to_string(offset) + "($fp)  # Store " + var + " to memory (address taken)");
+        }
+        // For non-temporaries, they should already be in memory, so don't trust the descriptor
+        // (it might be stale after branches)
+        
+        // Clear stale descriptor entries for the variable
+        addrDesc.clearVar(var);
+        addrDesc.addLocation(var, "memory");
+        if (!varReg.empty()) {
+            regDesc.clear(varReg);
+        }
+        
+        // Now load the address
+        string destReg = getReg(dest);
+        mipsCode.push_back("    la " + destReg + ", -" + to_string(offset) + "($fp)  # " + dest + " = &" + var);
+        addrDesc.addLocation(dest, destReg);
+        return;
+    }
+    
+    // Check for dereference operation (*ptr)
+    if (src[0] == '*') {
+        string ptr = src.substr(1);
+        // For pointer dereference, ensure we have the current value
+        // If pointer has both register and memory location, reload from memory
+        string ptrReg = addrDesc.getRegister(ptr);
+        bool hasMemory = addrDesc.getLocations(ptr).count("memory") || varOffsets.count(ptr);
+        
+        if (!ptrReg.empty() && hasMemory) {
+            // Pointer is in both register and memory - reload from memory to be safe
+            // Clear stale register location
+            addrDesc.removeLocation(ptr, ptrReg);
+            regDesc.clear(ptrReg);
+            ptrReg = "";  // Force reload
+        }
+        
+        if (ptrReg.empty()) {
+            // Load pointer from memory
+            ptrReg = getReg(ptr);
+        }
+        
+        // Determine if this is a char pointer (use lb) or int pointer (use lw)
+        bool isCharPointer = false;
+        if (pointerSizes.count(ptr) > 0 && pointerSizes[ptr] == 1) {
+            // Explicitly marked as char pointer
+            isCharPointer = true;
+        } else if (ptr.find("str") != string::npos || ptr.find("Str") != string::npos ||
+                   ptr.find("char") != string::npos || ptr.find("Char") != string::npos ||
+                   ptr[0] == 's') {  // Common convention: s, s1, str, etc. for strings
+            // Heuristic: variable name suggests it's a string/char pointer
+            isCharPointer = true;
+        }
+        
+        string destReg = getReg(dest);
+        if (isCharPointer) {
+            mipsCode.push_back("    lb " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (char)");
+        } else {
+            mipsCode.push_back("    lw " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr);
+        }
+        addrDesc.addLocation(dest, destReg);
+        
+        // CRITICAL: If ptr is a pointer-to-pointer, then *ptr is still a pointer
+        // When dereferencing int**, the result is int* (still a pointer!)
+        // Example: row_1 = *(m.data + 1) where m.data is int**
+        // Result: row_1 is int* and needs scaling by 4
+        // We detect this by checking if ptr is a struct member known to be int**
+        string ptrBase, ptrMember;
+        bool ptrIsArrow;
+        if (isStructMemberAccess(ptr, ptrBase, ptrMember, ptrIsArrow)) {
+            if (ptrMember == "data" || ptrMember == "next") {
+                // These are known to be pointer-to-pointer types
+                // Dereferencing gives us a pointer
+                pointerVars.insert(dest);
+                pointerSizes[dest] = 4;  // Points to int (4 bytes each)
+            }
+        }
+        // Also check for temporaries that resulted from arithmetic on int**
+        // e.g., t103 = m.data + 1, then row_1 = *t103
+        // If t103 is marked as int**, then *t103 is int*
+        else if (ptr[0] == 't' && isdigit(ptr[1]) && pointerVars.count(ptr) && pointerSizes[ptr] == 4) {
+            // This temp is a pointer with size 4, could be int** from pointer arithmetic
+            // Check if it came from struct member pointer arithmetic
+            // For now, conservatively mark result as pointer only if source was struct member
+            // This avoids false positives like *p1 where p1 is int*
+            pointerVars.insert(dest);
+            pointerSizes[dest] = 4;
+        }
+        
+        return;
+    }
+    
+    // Check for type cast operations (int_to_char, char_to_int, etc.)
+    // These are no-ops in MIPS since both are just numbers
+    // The actual value is in operand2
+    if (src.find("_to_") != string::npos && 
+        (src.find("int_to_char") != string::npos || src.find("char_to_int") != string::npos)) {
+        // For type casts, the actual value is in operand2
+        if (instr.operand2.has_value()) {
+            string actualSrc = instr.operand2.value();
+            string srcReg = getReg(actualSrc);
+            string destReg = getReg(dest);
+            mipsCode.push_back("    move " + destReg + ", " + srcReg + "  # " + dest + " = " + src + "(" + actualSrc + ")");
+            addrDesc.addLocation(dest, destReg);
+            return;
+        }
+    }
+    
+    // Handle copying FROM function parameter registers TO local variables
+    // This happens at function entry: x = param0, y = param1, etc.
+    if (src.substr(0, 5) == "param" && src.length() > 5 && isdigit(src[5])) {
+        int paramIndex = stoi(src.substr(5));
+        
+        // Special case: main function's argc and argv are already saved in prologue
+        if (currentFunc == "main" && (dest == "argc" || dest == "argv")) {
+            // Already handled in emitProlog, just update descriptor
+            addrDesc.addLocation(dest, "memory");
+            return;
+        }
+        
+        string srcReg;
+        
+        if (paramIndex == 0) srcReg = "$a0";
+        else if (paramIndex == 1) srcReg = "$a1";
+        else if (paramIndex == 2) srcReg = "$a2";
+        else if (paramIndex == 3) srcReg = "$a3";
+        else {
+            // Parameter is on stack
+            int offset = (paramIndex - 4) * 4;
+            srcReg = "$t9";  // Use temp register
+            mipsCode.push_back("    lw " + srcReg + ", " + to_string(offset) + "($sp)  # Load parameter " + to_string(paramIndex));
+        }
+        
+        // Check if this parameter is a pointer based on function signature analysis
+        bool isPointer = functionParamIsPointer.count({currentFunc, paramIndex}) > 0;
+        if (!isPointer) {
+            // Fallback: check pointerParams from recent function call
+            isPointer = (pointerParams.count(paramIndex) > 0);
+        }
+        // ADDITIONAL FALLBACK: Check if variable name suggests it's a string/char pointer
+        if (!isPointer && (dest.find("str") != string::npos || 
+                          dest.find("Str") != string::npos ||
+                          (dest.length() >= 1 && dest[0] == 's' && dest.length() <= 3))) {
+            isPointer = true;
+        }
+        
+        int ptrSize = 4;  // Default to int* size
+        if (isPointer) {
+            pointerVars.insert(dest);
+            // Get the pointer size from pre-pass analysis
+            if (functionParamPointerSize.count({currentFunc, paramIndex}) > 0) {
+                ptrSize = functionParamPointerSize[{currentFunc, paramIndex}];
+            } else if (dest.find("str") != string::npos || 
+                      dest.find("Str") != string::npos ||
+                      (dest.length() >= 1 && dest[0] == 's' && dest.length() <= 3)) {
+                // Variable name suggests char pointer
+                ptrSize = 1;
+            }
+            pointerSizes[dest] = ptrSize;
+        }
+        
+        // Assign to local variable
+        string destReg = getReg(dest);
+        mipsCode.push_back("    move " + destReg + ", " + srcReg + "  # " + dest + " = " + src);
+        addrDesc.addLocation(dest, destReg);
+        
+        // CRITICAL: If this is a pointer parameter, also store it to memory
+        // so it can be reloaded later when the register gets reused
+        if (isPointer) {
+            int destOffset = getVarOffset(dest);
+            mipsCode.push_back("    sw " + destReg + ", -" + to_string(destOffset) + "($fp)  # Store " + dest + " to memory (pointer param)");
+            addrDesc.addLocation(dest, "memory");  // Mark that it's also in memory
+            // CRITICAL: Update currentOffset to ensure subsequent variables don't collide
+            if (destOffset >= currentOffset) {
+                currentOffset = destOffset + 4;  // Move past this variable
+            }
+        }
+        
+        return;
+    }
+    
+    // Handle param assignment (for function calls) - CHECK THIS FIRST before other checks
+    if (dest == "param") {
+        // If this is the first parameter of a new call, clear previous pointer tracking
+        if (paramCount == 0) {
+            pointerParams.clear();
+        }
+        
+        string srcReg;
+        
+        // Handle string literals
+        if (isLiteral(src)) {
+            string label = allocateStringLiteral(src);
+            // Use a dedicated register for loading parameters
+            // Try $s7 first (saved register, less likely to be in use for temps)
+            srcReg = "$s7";
+            mipsCode.push_back("    la " + srcReg + ", " + label + "  # Load string " + src);
+        }
+        // Handle immediate values
+        else if (isImmediate(src)) {
+            // Use $s7 for immediate parameter loading
+            srcReg = "$s7";
+            mipsCode.push_back("    li " + srcReg + ", " + sanitizeOperand(src) + "  # Load immediate " + src);
+        }
+        // Handle variables
+        else {
+            srcReg = getReg(src);
+        }
+        
+        // Track if this parameter is a pointer (for proper INDEX handling later)
+        if (pointerVars.count(src) > 0) {
+            // Mark this parameter index as containing a pointer value
+            pointerParams.insert(paramCount);
+        }
+        
+        // Store parameters in sequence: $a0, $a1, $a2, $a3, then stack
+        if (paramCount == 0) {
+            mipsCode.push_back("    move $a0, " + srcReg + "  # Pass parameter " + src);
+            paramRegs.push_back("$a0");
+        } else if (paramCount == 1) {
+            mipsCode.push_back("    move $a1, " + srcReg + "  # Pass parameter " + src);
+            paramRegs.push_back("$a1");
+        } else if (paramCount == 2) {
+            mipsCode.push_back("    move $a2, " + srcReg + "  # Pass parameter " + src);
+            paramRegs.push_back("$a2");
+        } else if (paramCount == 3) {
+            mipsCode.push_back("    move $a3, " + srcReg + "  # Pass parameter " + src);
+            paramRegs.push_back("$a3");
+        } else {
+            // Store additional parameters on stack
+            int offset = (paramCount - 4) * 4;
+            mipsCode.push_back("    sw " + srcReg + ", " + to_string(offset) + "($sp)  # Pass parameter " + src + " on stack");
+        }
+        paramCount++;
+        return;
+    }
+    
+    // Check for immediate value
+    if (isImmediate(src)) {
+        string destReg = getReg(dest);
+        mipsCode.push_back("    li " + destReg + ", " + sanitizeOperand(src) + "  # " + dest + " = " + src);
+        addrDesc.addLocation(dest, destReg);
+        return;
+    }
+    
+    // Check for string literal
+    if (isLiteral(src)) {
+        string label = allocateStringLiteral(src);
+        string destReg = getReg(dest);
+        mipsCode.push_back("    la " + destReg + ", " + label + "  # " + dest + " = " + src);
+        addrDesc.addLocation(dest, destReg);
+        return;
+    }
+    
+    // Handle struct member store (e.g., pt.x = value or ptr->y = value)
+    string baseName, memberName;
+    bool isArrow;
+    if (isStructMemberAccess(dest, baseName, memberName, isArrow)) {
+        string srcReg = getReg(src);
+        genStructMemberStore(dest, srcReg);
+        return;
+    }
+    
+    // Handle indirect store (*ptr = value)
+    if (dest[0] == '*') {
+        string ptr = dest.substr(1);
+        
+        // Get the pointer value
+        string ptrReg = getReg(ptr);
+        
+        // CRITICAL: For indirect stores, we need BOTH the pointer register AND the source register
+        // active simultaneously. To avoid conflicts, we check if src would use the same register.
+        // If so, we move the pointer to a safe register first.
+        
+        string srcReg;
+        // Check if src is already in a register
+        string srcExistingReg = addrDesc.getRegister(src);
+        if (!srcExistingReg.empty() && srcExistingReg != ptrReg) {
+            // src is already in a different register, use it
+            srcReg = srcExistingReg;
+        } else {
+            // Need to load src - but first save ptr to a safe location ($v1 is safe)
+            if (ptrReg != "$v1") {
+                mipsCode.push_back("    move $v1, " + ptrReg + "  # Save pointer for indirect store");
+                ptrReg = "$v1";
+            }
+            srcReg = getReg(src);
+        }
+        
+        mipsCode.push_back("    sw " + srcReg + ", 0(" + ptrReg + ")  # *" + ptr + " = " + src);
+        
+        // CRITICAL: After an indirect store, we must invalidate variables that might be
+        // aliases of *ptr. We can't know at compile time which variables are modified.
+        // Strategy: Only invalidate variables that have memory locations (not pointers/parameters)
+        // This is conservative - pointers and parameters stay valid, only stack variables are invalidated.
+        for (const auto& reg : tempRegs) {
+            string var = regDesc.get(reg);
+            if (!var.empty()) {
+                // Only invalidate if this is a variable with a memory location (not a pointer param)
+                // Skip pointers (they won't be modified by storing through another pointer)
+                // Skip variables without memory (like parameters that are only in registers)
+                bool isPointer = pointerVars.count(var);
+                bool hasMemory = addrDesc.getLocations(var).count("memory") || varOffsets.count(var);
+                
+                if (!isPointer && hasMemory) {
+                    // This is a non-pointer variable with memory - it could be aliased, so invalidate
+// Arithmetic MIPS instructions
