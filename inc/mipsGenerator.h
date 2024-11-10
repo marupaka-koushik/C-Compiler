@@ -1498,4 +1498,504 @@ void MIPSGenerator::genAssign(const TACInstruction& instr) {
                 
                 if (!isPointer && hasMemory) {
                     // This is a non-pointer variable with memory - it could be aliased, so invalidate
-// Arithmetic MIPS instructions
+                    addrDesc.removeLocation(var, reg);
+                    addrDesc.addLocation(var, "memory");
+                    regDesc.clear(reg);
+                }
+            }
+        }
+        
+        return;
+    }
+    
+    // Regular assignment: dest = src  
+    // Get source value into a register
+    string srcReg = getReg(src);
+    
+    // If src is a pointer, propagate pointer information to dest
+    if (pointerVars.count(src)) {
+        pointerVars.insert(dest);
+        pointerSizes[dest] = pointerSizes[src];
+    }
+    
+    // CRITICAL: If src is a struct member that's a pointer (like m.data), mark both src and dest as pointers
+    string srcBase, srcMember;
+    bool srcIsArrow;
+    if (isStructMemberAccess(src, srcBase, srcMember, srcIsArrow)) {
+        // Check if this member is a known pointer type
+        if (srcMember == "data" || srcMember == "next" || srcMember == "ptr") {
+            // Mark the struct member itself as a pointer (for future arithmetic operations)
+            pointerVars.insert(src);
+            pointerSizes[src] = 4;  // Points to int* or similar (4 bytes each)
+            // Also mark the destination
+            pointerVars.insert(dest);
+            pointerSizes[dest] = 4;
+        }
+    }
+    
+    // For assignment, we can reuse the source register as destination
+    // or allocate a new one if needed
+    string destReg;
+    
+    // Check if dest is already in a register
+    string existingDestReg = addrDesc.getRegister(dest);
+    if (!existingDestReg.empty()) {
+        // Dest is already in a register, use it
+        destReg = existingDestReg;
+    } else {
+        // Dest is not in a register - we can reuse srcReg if src is a temporary
+        // Otherwise allocate a new register
+        if (src[0] == 't' && isdigit(src[1])) {
+            // src is a temporary - reuse its register for dest
+            destReg = srcReg;
+        } else {
+            // src is a variable - need separate register for dest
+            destReg = getReg(dest);
+        }
+    }
+    
+    // Only generate move if src and dest are in different registers
+    if (srcReg != destReg) {
+        mipsCode.push_back("    move " + destReg + ", " + srcReg + "  # " + dest + " = " + src);
+    }
+    
+    // CRITICAL: If destReg already held another variable, remove that mapping
+    string oldVar = regDesc.get(destReg);
+    if (!oldVar.empty() && oldVar != dest) {
+        addrDesc.removeLocation(oldVar, destReg);
+    }
+    
+    // Update descriptor
+    regDesc.set(destReg, dest);
+    addrDesc.addLocation(dest, destReg);
+    
+    // If src is a pointer, propagate pointer information to dest
+    if (pointerVars.count(src)) {
+        pointerVars.insert(dest);
+        pointerSizes[dest] = pointerSizes[src];
+    }
+    
+    // Store back to memory if dest has a memory location (local var, global, or static)
+    // For non-temporaries, we need to ensure they're stored to memory
+    bool shouldStore = false;
+    if (isStatic(dest)) {
+        shouldStore = true;
+    } else if (isGlobalVar(dest)) {
+        shouldStore = true;
+    } else if (!(dest[0] == 't' && isdigit(dest[1]))) {
+        // dest is not a temporary - it's a local variable that needs memory storage
+        // Allocate offset if not already done
+        if (!varOffsets.count(dest)) {
+            getVarOffset(dest);  // This allocates an offset
+        }
+        shouldStore = true;
+    }
+    
+    if (shouldStore) {
+        if (isStatic(dest)) {
+            // Static variable - store to .data section with unique label
+            string label = getStaticLabel(dest);
+            mipsCode.push_back("    la $s4, " + label + "  # Load address of static " + dest);
+            mipsCode.push_back("    sw " + destReg + ", 0($s4)  # Store to static");
+        } else if (isGlobalVar(dest)) {
+            // Global variable - store to .data section using la
+            // Use $s4 for address loading (saved register, won't interfere with temps)
+            mipsCode.push_back("    la $s4, " + dest + "  # Load address of global " + dest);
+            mipsCode.push_back("    sw " + destReg + ", 0($s4)  # Store to global");
+        } else {
+            // Local variable - store back to stack
+            int offset = varOffsets[dest];
+            mipsCode.push_back("    sw " + destReg + ", -" + to_string(offset) + "($fp)  # Store " + dest);
+            addrDesc.addLocation(dest, "memory");
+        }
+    }
+}
+
+// Generate arithmetic instruction
+void MIPSGenerator::genArithmetic(const TACInstruction& instr) {
+    string dest = instr.result;
+    string op1 = instr.operand1.value_or("");
+    string op2 = instr.operand2.value_or("");
+    
+    // Use $v0 and $v1 as scratch registers (not used by getReg for variable allocation)
+    string scratch1 = "$v0";
+    string scratch2 = "$v1";
+    
+    // Strategy: Load operands into dedicated scratch registers to avoid clobbering
+    // First, load op1 into scratch1
+    if (isImmediate(op1)) {
+        mipsCode.push_back("    li " + scratch1 + ", " + sanitizeOperand(op1) + "  # Load immediate " + op1);
+    } else {
+        // Check if op1 is a struct member access
+        string baseName1, memberName1;
+        bool isArrow1;
+        if (isStructMemberAccess(op1, baseName1, memberName1, isArrow1)) {
+            // Struct member access - use genStructMemberLoad
+            genStructMemberLoad(scratch1, op1);
+        } else {
+            // Check if op1 is already in a register
+            string op1Reg = addrDesc.getRegister(op1);
+            
+            // CRITICAL FIX: If variable has BOTH register and memory, prefer memory
+            // because register may be stale (descriptor not updated after reuse)
+            bool hasReg = !op1Reg.empty();
+            bool hasMemory = addrDesc.getLocations(op1).count("memory") || varOffsets.count(op1);
+            bool isVariable = !(op1[0] == 't' && op1.length() > 1 && isdigit(op1[1]));
+            
+            if (hasReg && hasMemory && isVariable) {
+                // Variable in BOTH reg and memory - reload from memory for safety
+                if (isStatic(op1)) {
+                    mipsCode.push_back("    lw " + scratch1 + ", " + op1 + "  # Load static var " + op1);
+                } else {
+                    int offset = getVarOffset(op1);
+                    mipsCode.push_back("    lw " + scratch1 + ", -" + to_string(offset) + "($fp)  # Load " + op1);
+                }
+                // CRITICAL: Remove stale register location since we reloaded from memory
+                addrDesc.removeLocation(op1, op1Reg);
+                regDesc.clear(op1Reg);  // Clear the register descriptor too
+            } else if (!op1Reg.empty() && op1Reg != scratch1 && op1Reg != scratch2) {
+                // Op1 is in a register, move it to scratch1
+                mipsCode.push_back("    move " + scratch1 + ", " + op1Reg + "  # Move " + op1 + " to " + scratch1);
+            } else if (op1Reg == scratch1) {
+                // Already in scratch1, nothing to do
+            } else if (op1Reg == scratch2) {
+                // In scratch2, move to scratch1
+                mipsCode.push_back("    move " + scratch1 + ", " + scratch2 + "  # Move " + op1 + " to " + scratch1);
+            } else {
+                // Not in register, load from memory
+                if (isStatic(op1)) {
+                    mipsCode.push_back("    lw " + scratch1 + ", " + op1 + "  # Load static var " + op1);
+                } else if (hasMemory) {
+                    int offset = getVarOffset(op1);
+                    mipsCode.push_back("    lw " + scratch1 + ", -" + to_string(offset) + "($fp)  # Load " + op1);
+                } else {
+                    // Unknown variable, treat as temp - try to load it
+                    int offset = getVarOffset(op1);
+                    mipsCode.push_back("    lw " + scratch1 + ", -" + to_string(offset) + "($fp)  # Load " + op1);
+                }
+            }
+        }
+    }
+    
+    // Now load op2 into scratch2 (op1 is safely in scratch1)
+    bool op2IsImmediate = isImmediate(op2);
+    if (!op2IsImmediate) {
+        // Check if op2 is a struct member access
+        string baseName2, memberName2;
+        bool isArrow2;
+        if (isStructMemberAccess(op2, baseName2, memberName2, isArrow2)) {
+            // Struct member access - use genStructMemberLoad
+            genStructMemberLoad(scratch2, op2);
+        } else {
+            string op2Reg = addrDesc.getRegister(op2);
+            
+            // CRITICAL FIX: If variable has BOTH register and memory, prefer memory
+            bool hasReg = !op2Reg.empty();
+            bool hasMemory = addrDesc.getLocations(op2).count("memory") || varOffsets.count(op2);
+            bool isVariable = !(op2[0] == 't' && op2.length() > 1 && isdigit(op2[1]));
+            
+            if (hasReg && hasMemory && isVariable) {
+                // Variable in BOTH reg and memory - reload from memory for safety
+                if (isStatic(op2)) {
+                    mipsCode.push_back("    lw " + scratch2 + ", " + op2 + "  # Load static var " + op2);
+                } else {
+                    int offset = getVarOffset(op2);
+                    mipsCode.push_back("    lw " + scratch2 + ", -" + to_string(offset) + "($fp)  # Load " + op2);
+                }
+                // CRITICAL: Remove stale register location since we reloaded from memory
+                addrDesc.removeLocation(op2, op2Reg);
+                regDesc.clear(op2Reg);  // Clear the register descriptor too
+            } else if (!op2Reg.empty() && op2Reg != scratch1 && op2Reg != scratch2) {
+                // Op2 is in a register, move it to scratch2
+                mipsCode.push_back("    move " + scratch2 + ", " + op2Reg + "  # Move " + op2 + " to " + scratch2);
+            } else if (op2Reg == scratch2) {
+                // Already in scratch2, nothing to do
+            } else if (op2Reg == scratch1) {
+                // In scratch1 (same as op1), still need to move to scratch2
+                mipsCode.push_back("    move " + scratch2 + ", " + scratch1 + "  # Move " + op2 + " to " + scratch2);
+            } else {
+                // Not in register, load from memory
+                if (isStatic(op2)) {
+                    mipsCode.push_back("    lw " + scratch2 + ", " + op2 + "  # Load static var " + op2);
+                } else if (hasMemory) {
+                    int offset = getVarOffset(op2);
+                    mipsCode.push_back("    lw " + scratch2 + ", -" + to_string(offset) + "($fp)  # Load " + op2);
+                } else {
+                    // Unknown variable, treat as temp
+                    int offset = getVarOffset(op2);
+                    mipsCode.push_back("    lw " + scratch2 + ", -" + to_string(offset) + "($fp)  # Load " + op2);
+                }
+            }
+        }
+    }
+    
+    // Now get destination register - operands are safely in scratch registers
+    string destReg = getReg(dest);
+    
+    // CRITICAL: If destReg already held another variable, remove that mapping
+    string oldVar = regDesc.get(destReg);
+    if (!oldVar.empty() && oldVar != dest) {
+        addrDesc.removeLocation(oldVar, destReg);
+    }
+    
+    string op1Reg = scratch1;
+    string op2Reg = scratch2;
+    
+    // Handle pointer arithmetic scaling
+    // If op1 is a pointer and we're doing ADD or SUB, scale op2 by the size of pointed-to type
+    bool isOp1Pointer = pointerVars.count(op1);
+    int elementSize = 4;  // Default
+    
+    // Check if op1 is a struct member that's a pointer
+    if (!isOp1Pointer) {
+        string op1Base, op1Member;
+        bool op1IsArrow;
+        if (isStructMemberAccess(op1, op1Base, op1Member, op1IsArrow)) {
+            if (op1Member == "data" || op1Member == "next" || op1Member == "ptr") {
+                isOp1Pointer = true;
+                elementSize = 4;
+            }
+        }
+    } else {
+        elementSize = pointerSizes[op1];
+    }
+    
+    if ((instr.op == TACOp::ADD || instr.op == TACOp::SUB) && isOp1Pointer) {
+        if (elementSize > 1) {
+            // Scale op2 by element size
+            if (op2IsImmediate) {
+                // op2 is immediate, scale it now
+                int scaled = stoi(op2) * elementSize;
+                mipsCode.push_back("    li " + scratch2 + ", " + to_string(scaled) + "  # Scale offset by " + to_string(elementSize));
+            } else {
+                // op2 is in a register, multiply it by element size
+                if (elementSize == 8) {
+                    // Shift left by 3 (multiply by 8)
+                    mipsCode.push_back("    sll " + scratch2 + ", " + scratch2 + ", 3  # Scale by 8 for pointer arithmetic");
+                } else if (elementSize == 4) {
+                    // Shift left by 2 (multiply by 4)
+                    mipsCode.push_back("    sll " + scratch2 + ", " + scratch2 + ", 2  # Scale by 4 for pointer arithmetic");
+                } else if (elementSize == 2) {
+                    mipsCode.push_back("    sll " + scratch2 + ", " + scratch2 + ", 1  # Scale by 2 for pointer arithmetic");
+                } else {
+                    // General case: multiply (avoid using $at)
+                    mipsCode.push_back("    li $t9, " + to_string(elementSize));
+                    mipsCode.push_back("    mul " + scratch2 + ", " + scratch2 + ", $t9  # Scale by " + to_string(elementSize) + " for pointer arithmetic");
+                }
+            }
+        }
+        // Mark result as also being a pointer of the same type
+        pointerVars.insert(dest);
+        pointerSizes[dest] = elementSize;
+    }
+    
+    string mipsOp;
+    switch (instr.op) {
+        case TACOp::ADD: mipsOp = "add"; break;
+        case TACOp::SUB: mipsOp = "sub"; break;
+        case TACOp::MUL: mipsOp = "mul"; break;
+        case TACOp::DIV: mipsOp = "div"; break;
+        case TACOp::MOD: 
+            // MIPS doesn't have direct MOD, use div + mfhi
+            {
+                string op2Reg = getReg(op2);
+                mipsCode.push_back("    div " + op1Reg + ", " + op2Reg);
+                mipsCode.push_back("    mfhi " + destReg + "  # " + dest + " = " + op1 + " % " + op2);
+                regDesc.set(destReg, dest);
+                addrDesc.addLocation(dest, destReg);
+                return;
+            }
+        case TACOp::BIT_AND: mipsOp = "and"; break;
+        case TACOp::BIT_OR: mipsOp = "or"; break;
+        case TACOp::BIT_XOR: mipsOp = "xor"; break;
+        case TACOp::LSHFT: mipsOp = "sll"; break;
+        case TACOp::RSHFT: mipsOp = "srl"; break;
+        default: return;
+    }
+    
+    // Check if op2 is immediate
+    if (op2IsImmediate) {
+        // Special case: XOR with -1 is bitwise NOT, use NOR instead
+        if (instr.op == TACOp::BIT_XOR && op2 == "-1") {
+            mipsCode.push_back("    nor " + destReg + ", " + op1Reg + ", $zero" + 
+                             "  # " + dest + " = ~" + op1 + " (bitwise NOT)");
+        } else {
+            string immOp = mipsOp + "i";
+            // Not all operations have immediate versions
+            if (instr.op == TACOp::ADD || instr.op == TACOp::BIT_AND || 
+                instr.op == TACOp::BIT_OR || instr.op == TACOp::BIT_XOR) {
+                mipsCode.push_back("    " + immOp + " " + destReg + ", " + op1Reg + ", " + sanitizeOperand(op2) + 
+                                 "  # " + dest + " = " + op1 + " " + opToStr(instr.op) + " " + op2);
+            } else {
+                // Load immediate into scratch register
+                mipsCode.push_back("    li " + op2Reg + ", " + sanitizeOperand(op2) + "  # Load immediate " + op2);
+                mipsCode.push_back("    " + mipsOp + " " + destReg + ", " + op1Reg + ", " + op2Reg + 
+                                 "  # " + dest + " = " + op1 + " " + opToStr(instr.op) + " " + op2);
+            }
+        }
+    } else {
+        // op2Reg already loaded into scratch register
+        mipsCode.push_back("    " + mipsOp + " " + destReg + ", " + op1Reg + ", " + op2Reg + 
+                         "  # " + dest + " = " + op1 + " " + opToStr(instr.op) + " " + op2);
+    }
+    
+    regDesc.set(destReg, dest);
+    addrDesc.addLocation(dest, destReg);
+    
+    // If dest is a static variable, store it back to memory immediately
+    if (isStatic(dest)) {
+        mipsCode.push_back("    sw " + destReg + ", " + dest + "  # Store static var " + dest);
+    }
+}
+
+// Generate comparison instruction (with conditional jumps)
+void MIPSGenerator::genComparison(const TACInstruction& instr) {
+    if (instr.isGoto) {
+        // Conditional jump: goto label if op1 <cmp> op2
+        string op1 = instr.operand1.value_or("");
+        string op2 = instr.operand2.value_or("");
+        string label = getMIPSLabel(instr.result);
+        
+        // CRITICAL FIX: For conditional jumps near label boundaries, reload variables from memory
+        // This handles cases where we jump to nearby instructions (e.g., continue to condition)
+        string op1Reg;
+        bool isOp1Variable = !(op1[0] == 't' && op1.length() > 1 && isdigit(op1[1]));
+        
+        // Check if we're within 3 instructions of a label (likely in same basic block after jump)
+        bool nearLabel = false;
+        for (int offset = -3; offset <= 0; offset++) {
+            if (gotoTargetsSet.count(currentInstrIndex + offset)) {
+                nearLabel = true;
+                break;
+            }
+        }
+        
+        if (isOp1Variable && varOffsets.count(op1) && nearLabel) {
+            // Variable near a label: reload from memory for safety
+            int offset = getVarOffset(op1);
+            mipsCode.push_back("    lw $t8, -" + to_string(offset) + "($fp)  # Load " + op1 + " for condition");
+            op1Reg = "$t8";
+        } else {
+            // Temporary or far from labels: use normal getReg logic
+            op1Reg = getReg(op1);
+        }
+        
+        // Handle op2: variables, temporaries, or immediates
+        string op2Reg;
+        if (isImmediate(op2)) {
+            if (op2 == "0") {
+                op2Reg = "$zero";
+            } else {
+                string tempReg = "$t9";  // Use $t9 as scratch
+                mipsCode.push_back("    li " + tempReg + ", " + sanitizeOperand(op2));
+                op2Reg = tempReg;
+            }
+        } else {
+            bool isOp2Variable = !(op2[0] == 't' && op2.length() > 1 && isdigit(op2[1]));
+            if (isOp2Variable && varOffsets.count(op2) && nearLabel) {
+                // Variable near a label: reload from memory for safety
+                int offset = getVarOffset(op2);
+                string reloadReg = (op1Reg == "$t8") ? "$t9" : "$t8";
+                mipsCode.push_back("    lw " + reloadReg + ", -" + to_string(offset) + "($fp)  # Load " + op2 + " for condition");
+                op2Reg = reloadReg;
+            } else {
+                // Temporary or far from labels: use normal getReg logic
+                op2Reg = getReg(op2);
+            }
+        }
+        
+        string branchOp;
+        switch (instr.op) {
+            case TACOp::LT: branchOp = "blt"; break;
+            case TACOp::GT: branchOp = "bgt"; break;
+            case TACOp::LE: branchOp = "ble"; break;
+            case TACOp::GE: branchOp = "bge"; break;
+            case TACOp::EQ: branchOp = "beq"; break;
+            case TACOp::NE: branchOp = "bne"; break;
+            default: return;
+        }
+        
+        mipsCode.push_back("    " + branchOp + " " + op1Reg + ", " + op2Reg + ", " + label + 
+                         "  # if " + op1 + " " + opToStr(instr.op) + " " + op2 + " goto " + instr.result);
+    } else {
+        // Regular comparison: dest = op1 <cmp> op2
+        string dest = instr.result;
+        string op1 = instr.operand1.value_or("");
+        string op2 = instr.operand2.value_or("");
+        
+        string op1Reg = getReg(op1);
+        
+        // FIX: Check if op1 variable has BOTH register and memory - reload from memory for safety
+        // This prevents using stale register values when the register has been reused
+        {
+            bool hasReg = !op1Reg.empty();
+            bool hasMemory = addrDesc.getLocations(op1).count("memory") || varOffsets.count(op1);
+            bool isVariable = !(op1[0] == 't' && op1.length() > 1 && isdigit(op1[1]));
+            
+            if (hasReg && hasMemory && isVariable) {
+                // Variable in BOTH reg and memory - reload from memory for safety
+                int offset = getVarOffset(op1);
+                mipsCode.push_back("    lw $t8, -" + to_string(offset) + "($fp)  # Reload " + op1 + " from memory");
+                op1Reg = "$t8";
+            }
+        }
+        
+        string op2Reg = isImmediate(op2) ? "$zero" : getReg(op2);
+        
+        // FIX: Same check for op2
+        if (!isImmediate(op2)) {
+            bool hasReg = !op2Reg.empty();
+            bool hasMemory = addrDesc.getLocations(op2).count("memory") || varOffsets.count(op2);
+            bool isVariable = !(op2[0] == 't' && op2.length() > 1 && isdigit(op2[1]));
+            
+            if (hasReg && hasMemory && isVariable) {
+                int offset = getVarOffset(op2);
+                mipsCode.push_back("    lw $t9, -" + to_string(offset) + "($fp)  # Reload " + op2 + " from memory");
+                op2Reg = "$t9";
+            }
+        }
+        
+        string destReg = getReg(dest);
+        
+        // Handle immediate op2
+        if (isImmediate(op2) && op2 != "0") {
+            string tempReg = "$t9";
+            mipsCode.push_back("    li " + tempReg + ", " + sanitizeOperand(op2));
+            op2Reg = tempReg;
+        }
+        
+        // FIX: If destReg is same as op1Reg or op2Reg, we'll corrupt the operand
+        // Use a scratch register for the result, then move to destReg
+        string actualDestReg = destReg;
+        if (destReg == op1Reg || destReg == op2Reg) {
+            // Use $t8 as scratch (assuming it's not op1Reg or op2Reg)
+            actualDestReg = "$t8";
+        }
+        
+        // Use slt/seq instructions to set dest to 0 or 1
+        switch (instr.op) {
+            case TACOp::LT:
+                mipsCode.push_back("    slt " + actualDestReg + ", " + op1Reg + ", " + op2Reg + "  # " + dest + " = " + op1 + " < " + op2);
+                break;
+            case TACOp::GT:
+                mipsCode.push_back("    sgt " + actualDestReg + ", " + op1Reg + ", " + op2Reg + "  # " + dest + " = " + op1 + " > " + op2);
+                break;
+            case TACOp::LE:
+                mipsCode.push_back("    sle " + actualDestReg + ", " + op1Reg + ", " + op2Reg + "  # " + dest + " = " + op1 + " <= " + op2);
+                break;
+            case TACOp::GE:
+                mipsCode.push_back("    sge " + actualDestReg + ", " + op1Reg + ", " + op2Reg + "  # " + dest + " = " + op1 + " >= " + op2);
+                break;
+            case TACOp::EQ:
+                mipsCode.push_back("    seq " + actualDestReg + ", " + op1Reg + ", " + op2Reg + "  # " + dest + " = " + op1 + " == " + op2);
+                break;
+            case TACOp::NE:
+                mipsCode.push_back("    sne " + actualDestReg + ", " + op1Reg + ", " + op2Reg + "  # " + dest + " = " + op1 + " != " + op2);
+                break;
+            default: break;
+        }
+        
+        // If we used a scratch register, move result to destReg
+        if (actualDestReg != destReg) {
+            mipsCode.push_back("    move " + destReg + ", " + actualDestReg + "  # Move result to " + dest);
+// Stack frame management
