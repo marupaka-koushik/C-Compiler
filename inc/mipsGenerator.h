@@ -1998,4 +1998,504 @@ void MIPSGenerator::genComparison(const TACInstruction& instr) {
         // If we used a scratch register, move result to destReg
         if (actualDestReg != destReg) {
             mipsCode.push_back("    move " + destReg + ", " + actualDestReg + "  # Move result to " + dest);
-// Stack frame management
+        }
+        
+        addrDesc.addLocation(dest, destReg);
+    }
+}
+
+// Generate GOTO instruction
+void MIPSGenerator::genGoto(const TACInstruction& instr) {
+    // Before jumping, spill all temporary variables in registers to ensure they're available after the jump
+    // This is important for variables used across basic blocks (like in switch statements)
+    for (const auto& varEntry : addrDesc.varToLocs) {
+        const string& var = varEntry.first;
+        const set<string>& locs = varEntry.second;
+        
+        // Only spill temporaries that are in registers
+        if (!var.empty() && var[0] == 't') {
+            for (const auto& loc : locs) {
+                if (loc[0] == '$') {  // It's in a register
+                    int offset = getVarOffset(var);
+                    mipsCode.push_back("    sw " + loc + ", -" + to_string(offset) + "($fp)  # Spill " + var);
+                    break;  // Only spill once per variable
+                }
+            }
+        }
+    }
+    
+    string label = getMIPSLabel(instr.result);
+    mipsCode.push_back("    j " + label + "  # goto " + instr.result);
+}
+
+// Generate conditional jump (IF_EQ, IF_NE)
+void MIPSGenerator::genConditionalJump(const TACInstruction& instr) {
+    // Format: if operand1 == operand2 goto result
+    string cond = instr.operand1.value_or("");
+    string value = instr.operand2.value_or("");
+    string label = getMIPSLabel(instr.result);
+    
+    string condReg = getReg(cond);
+    string valueReg;
+    
+    // Handle immediate value
+    if (isImmediate(value)) {
+        if (value == "0") {
+            valueReg = "$zero";
+        } else {
+            // FIX: Don't use $t9 if condReg is $t9 (would corrupt the condition value)
+            valueReg = (condReg == "$t9") ? "$t8" : "$t9";
+            mipsCode.push_back("    li " + valueReg + ", " + sanitizeOperand(value));
+        }
+    } else {
+        valueReg = getReg(value);
+    }
+    
+    if (instr.op == TACOp::IF_EQ) {
+        mipsCode.push_back("    beq " + condReg + ", " + valueReg + ", " + label + 
+                          "  # if " + cond + " == " + value + " goto " + instr.result);
+    } else if (instr.op == TACOp::IF_NE) {
+        mipsCode.push_back("    bne " + condReg + ", " + valueReg + ", " + label + 
+                          "  # if " + cond + " != " + value + " goto " + instr.result);
+    }
+}
+
+// Generate LABEL
+void MIPSGenerator::genLabel(const TACInstruction& instr) {
+    string label = instr.result;
+    
+    // Skip emitting label if it's a function name (already emitted in prologue)
+    // Function labels are emitted without L_ prefix in emitProlog
+    if (label == currentFunc) {
+        // This is the function entry label, already emitted by emitProlog
+        return;
+    }
+    
+    string mipsLabel = getMIPSLabel(label);
+    mipsCode.push_back(mipsLabel + ":");
+    emittedLabels.insert(mipsLabel);  // Track that this label has been emitted
+}
+
+// Generate CALL instruction
+void MIPSGenerator::genCall(const TACInstruction& instr) {
+    string funcName = instr.operand1.value_or("");
+    string argCount = instr.operand2.value_or("0");
+    
+    // Handle printf syscall
+    if (funcName == "printf") {
+        if (paramCount == 1) {
+            // Simple string print: syscall 4
+            // $a0 already contains the string address
+            mipsCode.push_back("    li $v0, 4  # syscall: print string");
+            mipsCode.push_back("    syscall");
+        } else if (paramCount >= 2) {
+            // Printf with format string and arguments
+            // Need to parse format string and print accordingly
+            // Format string is in $a0, arguments in $a1, $a2, $a3, ...
+            
+            // For proper implementation, we need to:
+            // 1. Load format string and parse it at runtime (complex)
+            // 2. OR generate code based on known format string patterns (simpler)
+            
+            // Since format strings are compile-time constants, we can parse them here
+            // We'll implement a simplified version that handles %d, %c, and literal text
+            
+            // Generate code to print the format string with substitutions
+            // For now, use a simple approach: print each argument as integer
+            int argIndex = 1;
+            for (int i = 1; i < paramCount && i < paramRegs.size(); i++) {
+                mipsCode.push_back("    move $a0, " + paramRegs[i] + "  # Print argument " + to_string(i));
+                mipsCode.push_back("    li $v0, 1  # syscall: print integer");
+                mipsCode.push_back("    syscall");
+                
+                // Print space between arguments (except last)
+                if (i < paramCount - 1) {
+                    mipsCode.push_back("    li $v0, 11  # syscall: print char");
+                    mipsCode.push_back("    li $a0, 32  # ASCII space");
+                    mipsCode.push_back("    syscall");
+                }
+            }
+            
+            // Print newline
+            mipsCode.push_back("    li $v0, 11  # syscall: print char");
+            mipsCode.push_back("    li $a0, 10  # ASCII newline");
+            mipsCode.push_back("    syscall");
+        }
+        
+        // Reset parameter tracking after function call
+        paramCount = 0;
+        paramRegs.clear();
+        
+        // Set return value if needed
+        if (instr.op == TACOp::CALL) {
+            string dest = instr.result;
+            string destReg = getReg(dest);
+            mipsCode.push_back("    li " + destReg + ", 0  # " + dest + " = printf return value");
+            addrDesc.addLocation(dest, destReg);
+        }
+        return;
+    }
+    
+    // Handle scanf syscall
+    if (funcName == "scanf") {
+        // First parameter is format string (in $a0)
+        // Second parameter is address to store input (in $a1)
+        
+        // Read integer (syscall 5)
+        mipsCode.push_back("    li $v0, 5  # syscall: read integer");
+        mipsCode.push_back("    syscall");
+        
+        // Store result to address in $a1
+        // Don't use $t0 as it might be holding an important value
+        if (paramCount >= 2 && paramRegs.size() >= 2) {
+            mipsCode.push_back("    sw $v0, 0(" + paramRegs[1] + ")  # Store input to address");
+        }
+        
+        // Reset parameter tracking after function call
+        paramCount = 0;
+        paramRegs.clear();
+        
+        // Set return value to 1 (success)
+        if (instr.op == TACOp::CALL) {
+            string dest = instr.result;
+            string destReg = getReg(dest);
+            mipsCode.push_back("    li " + destReg + ", 1  # " + dest + " = scanf return value");
+            addrDesc.addLocation(dest, destReg);
+        }
+        return;
+    }
+    
+    // CALLER-SAVE: Save all variables in $t0-$t9 that are LIVE across this call
+    // After the call, invalidate all $t registers (callee may have clobbered them)
+    vector<string> tRegs = {"$t0", "$t1", "$t2", "$t3", "$t4", "$t5", "$t6", "$t7", "$t8", "$t9"};
+    
+    // Save all variables (including temporaries) currently in $t registers if they're live
+    for (const auto& entry : addrDesc.varToLocs) {
+        const string& var = entry.first;
+        const set<string>& locs = entry.second;
+        
+        if (var.empty()) continue;
+        
+        // Check if this variable is LIVE (has a next-use after this instruction)
+        int nextUse = getNextUse(var, currentInstrIndex);
+        if (nextUse == -1) {
+            // Variable is dead, no need to save it
+            continue;
+        }
+        
+        // Check if this variable is in a $t register
+        for (const string& loc : locs) {
+            if (loc[0] == '$' && loc[1] == 't') {
+                // Spill this variable to its home stack location
+                int offset = getVarOffset(var);
+                mipsCode.push_back("    sw " + loc + ", -" + to_string(offset) + "($fp)  # Save " + var + " before call");
+                // Update address descriptor: variable is now also in memory
+                addrDesc.addLocation(var, "memory");
+                break;  // Only save once per variable
+            }
+        }
+    }
+    
+    // Regular function call
+    mipsCode.push_back("    jal " + funcName + "  # call " + funcName);
+    
+    // CRITICAL: Clear register and address descriptors for caller-saved registers
+    // The callee may have clobbered $t0-$t9 (they're caller-saved)
+    // This forces subsequent uses of these variables to reload from memory
+    
+    // Step 1: Clear the REGISTER DESCRIPTOR for all $t registers
+    // This tells the allocator these registers are now EMPTY/FREE
+    for (const string& reg : tRegs) {
+        regDesc.clear(reg);
+    }
+    
+    // Step 2: Clear the ADDRESS DESCRIPTOR - remove $t registers from all variables
+    // This tells the allocator that variables are NO LONGER in these registers
+    vector<string> toRemove;  // Variables to remove entirely
+    for (const string& reg : tRegs) {
+        for (auto& entry : addrDesc.varToLocs) {
+            entry.second.erase(reg);
+            // If variable has no locations left, mark for removal (it was a callee-local variable)
+            if (entry.second.empty()) {
+                toRemove.push_back(entry.first);
+            }
+        }
+    }
+    // Remove variables that have no locations (ghost variables from callee scope)
+    for (const string& var : toRemove) {
+        addrDesc.clearVar(var);
+    }
+    
+    // Reset parameter tracking after function call
+    paramCount = 0;
+    paramRegs.clear();
+    // NOTE: Don't clear pointerParams here! It needs to persist into the called function
+    // so that "x = param0" inside the callee can know if param0 was a pointer.
+    // pointerParams will be cleared when we start building parameters for the NEXT call.
+    
+    // Get return value (if not void)
+    if (instr.op == TACOp::CALL) {
+        string dest = instr.result;
+        string destReg = getReg(dest);
+        mipsCode.push_back("    move " + destReg + ", $v0  # " + dest + " = return value");
+        addrDesc.addLocation(dest, destReg);
+    }
+}
+
+// Generate RETURN instruction
+void MIPSGenerator::genReturn(const TACInstruction& instr) {
+    string retVal = instr.result;
+    
+    if (!retVal.empty() && retVal != "0") {
+        string retReg = getReg(retVal);
+        mipsCode.push_back("    move $v0, " + retReg + "  # return " + retVal);
+    }
+    
+    // Jump to function epilogue instead of emitting it inline
+    // The epilogue will be generated once at the end of the function
+    string epilogueLabel = currentFunc + "_epilogue";
+    mipsCode.push_back("    j " + epilogueLabel + "  # Jump to function epilogue");
+}
+
+// Generate array access (INDEX instruction)
+void MIPSGenerator::genArrayAccess(const TACInstruction& instr) {
+    if (instr.op == TACOp::INDEX) {
+        // INDEX: dest = operand1[operand2]
+        // e.g., t5 = intArr[t3]
+        string dest = instr.result;
+        string array = instr.operand1.value_or("");
+        string index = instr.operand2.value_or("");
+        
+        // Detect if this is a char array (heuristic based on name or pointerSize)
+        bool isCharArray = false;
+        if (pointerSizes.count(array) > 0 && pointerSizes[array] == 1) {
+            isCharArray = true;  // Explicitly marked as char pointer
+        } else if (array.find("char") != string::npos || 
+                   array.find("Char") != string::npos ||
+                   array.find("str") != string::npos ||
+                   array.find("Str") != string::npos ||
+                   array[0] == 's') {  // Common naming: s, s1, s2 for strings
+            isCharArray = true;  // Name suggests char array/pointer
+        }
+        
+        string indexReg = getReg(index);
+        string destReg = getReg(dest);
+        
+        // Use $s7 and $s6 as scratch registers for array access (caller-saved, safe to use)
+        string offsetReg = "$s7";
+        string baseReg = "$s6";
+        
+        // Calculate offset: index * element_size
+        if (isCharArray) {
+            // For char arrays, offset = index * 1 (no shift needed)
+            mipsCode.push_back("    move " + offsetReg + ", " + indexReg + "  # offset = index (char array)");
+        } else {
+            // For int arrays, offset = index * 4
+            mipsCode.push_back("    sll " + offsetReg + ", " + indexReg + ", 2  # offset = index * 4");
+        }
+        
+        // Get base address of array
+        // Check if this is a pointer variable (needs dereference) or actual array
+        if (pointerVars.count(array) > 0) {
+            // It's a pointer - load the pointer value
+            string ptrReg = addrDesc.getRegister(array);
+            if (!ptrReg.empty()) {
+                mipsCode.push_back("    move " + baseReg + ", " + ptrReg + "  # " + array + " is a pointer");
+            } else {
+                int arrayOffset = getVarOffset(array);
+                mipsCode.push_back("    lw " + baseReg + ", -" + to_string(arrayOffset) + "($fp)  # Load pointer " + array);
+            }
+        } else {
+            // It's an actual array - compute its address
+            int arrayOffset = getVarOffset(array);
+            mipsCode.push_back("    la " + baseReg + ", -" + to_string(arrayOffset) + "($fp)  # base address of " + array);
+        }
+        
+        // Add offset to base
+        mipsCode.push_back("    add " + baseReg + ", " + baseReg + ", " + offsetReg);
+        
+        // Load value (lb for char, lw for int)
+        if (isCharArray) {
+            mipsCode.push_back("    lb " + destReg + ", 0(" + baseReg + ")  # " + dest + " = " + array + "[" + index + "]");
+        } else {
+            mipsCode.push_back("    lw " + destReg + ", 0(" + baseReg + ")  # " + dest + " = " + array + "[" + index + "]");
+        }
+        
+        addrDesc.addLocation(dest, destReg);
+        
+        // CRITICAL: If we're indexing into a pointer-to-pointer (e.g., char**),
+        // the result is a pointer (e.g., char*)
+        // Check if array is a pointer and mark result accordingly
+        if (pointerVars.count(array) > 0) {
+            // array is a pointer - what does it point to?
+            // For char** (size 4 for pointer), result is char* (size 1 for char)
+            // For int** (size 4 for pointer), result is int* (size 4 for int)
+            if (pointerSizes.count(array) > 0 && pointerSizes[array] == 4) {
+                // This is a pointer-to-pointer (int** or char**)
+                // The result is a pointer
+                pointerVars.insert(dest);
+                // What does it point to? Check the array name to infer
+                if (array.find("argv") != string::npos || 
+                    array.find("args") != string::npos ||
+                    array[0] == 's' ||  // Common string naming
+                    array.find("str") != string::npos ||
+                    array.find("Str") != string::npos) {
+                    // Likely char**, so result is char* (size 1)
+                    pointerSizes[dest] = 1;
+                } else {
+                    // Likely int**, so result is int* (size 4)
+                    pointerSizes[dest] = 4;
+                }
+            }
+        }
+    } else if (instr.op == TACOp::ARRAY_STORE) {
+        // ARRAY_STORE: result[operand1] = operand2
+        // e.g., intArr[t3] = t4
+        string array = instr.result;
+        string index = instr.operand1.value_or("");
+        string value = instr.operand2.value_or("");
+        
+        // Detect if this is a char array (heuristic based on name or pointerSize)
+        bool isCharArray = false;
+        if (pointerSizes.count(array) > 0 && pointerSizes[array] == 1) {
+            isCharArray = true;  // Explicitly marked as char pointer
+        } else if (array.find("char") != string::npos || 
+                   array.find("Char") != string::npos ||
+                   array.find("str") != string::npos ||
+                   array.find("Str") != string::npos ||
+                   array[0] == 's') {  // Common naming: s, s1, s2 for strings
+            isCharArray = true;  // Name suggests char array/pointer
+        }
+        
+        // Use scratch registers to avoid corrupting any live variables
+        string offsetReg = "$s7";
+        string baseReg = "$s6";
+        string valueReg = "$s5";  // Use $s5 for value to avoid conflicts
+        
+        // Load index into scratch
+        string indexReg = getReg(index);
+        
+        // Calculate offset based on element size
+        if (isCharArray) {
+            // For char arrays, offset = index * 1 (no shift needed)
+            mipsCode.push_back("    move " + offsetReg + ", " + indexReg + "  # offset = index (char array)");
+        } else {
+            // For int arrays, offset = index * 4
+            mipsCode.push_back("    sll " + offsetReg + ", " + indexReg + ", 2  # offset = index * 4");
+        }
+        
+        // Load value into scratch register (don't use getReg to avoid register conflicts)
+        if (isImmediate(value)) {
+            mipsCode.push_back("    li " + valueReg + ", " + sanitizeOperand(value) + "  # Load immediate " + value);
+        } else {
+            // Load from wherever value currently is
+            string valReg = addrDesc.getRegister(value);
+            if (!valReg.empty()) {
+                // Value is in a register
+                mipsCode.push_back("    move " + valueReg + ", " + valReg + "  # Move " + value + " to " + valueReg);
+            } else if (varOffsets.count(value) || addrDesc.getLocations(value).count("memory")) {
+                // Load from memory
+                int offset = getVarOffset(value);
+                mipsCode.push_back("    lw " + valueReg + ", -" + to_string(offset) + "($fp)  # Load " + value);
+            } else {
+                // Unknown - try getReg but move to scratch immediately
+                string tempReg = getReg(value);
+                if (tempReg != valueReg) {
+                    mipsCode.push_back("    move " + valueReg + ", " + tempReg + "  # Move " + value + " to " + valueReg);
+                }
+            }
+        }
+        
+        // Get base address of array
+        // Check if this is a pointer variable (needs dereference) or actual array
+        if (pointerVars.count(array) > 0) {
+            // It's a pointer - load the pointer value
+            string ptrReg = addrDesc.getRegister(array);
+            if (!ptrReg.empty()) {
+                mipsCode.push_back("    move " + baseReg + ", " + ptrReg + "  # " + array + " is a pointer");
+            } else {
+                int arrayOffset = getVarOffset(array);
+                mipsCode.push_back("    lw " + baseReg + ", -" + to_string(arrayOffset) + "($fp)  # Load pointer " + array);
+            }
+        } else {
+            // It's an actual array - compute its address
+            int arrayOffset = getVarOffset(array);
+            mipsCode.push_back("    la " + baseReg + ", -" + to_string(arrayOffset) + "($fp)  # base address of " + array);
+        }
+        
+        // Add offset
+        mipsCode.push_back("    add " + baseReg + ", " + baseReg + ", " + offsetReg);
+        
+        // Store value (sb for char, sw for int)
+        if (isCharArray) {
+            mipsCode.push_back("    sb " + valueReg + ", 0(" + baseReg + ")  # " + array + "[" + index + "] = " + value);
+        } else {
+            mipsCode.push_back("    sw " + valueReg + ", 0(" + baseReg + ")  # " + array + "[" + index + "] = " + value);
+        }
+    }
+}
+
+// Generate instruction based on operation
+void MIPSGenerator::generateInstruction(const TACInstruction& instr) {
+    switch (instr.op) {
+        case TACOp::ASSIGN:
+            genAssign(instr);
+            break;
+            
+        case TACOp::ADD:
+        case TACOp::SUB:
+        case TACOp::MUL:
+        case TACOp::DIV:
+        case TACOp::MOD:
+        case TACOp::BIT_AND:
+        case TACOp::BIT_OR:
+        case TACOp::BIT_XOR:
+        case TACOp::LSHFT:
+        case TACOp::RSHFT:
+            genArithmetic(instr);
+            break;
+            
+        case TACOp::LT:
+        case TACOp::GT:
+        case TACOp::LE:
+        case TACOp::GE:
+        case TACOp::EQ:
+        case TACOp::NE:
+            genComparison(instr);
+            break;
+            
+        case TACOp::GOTO:
+            genGoto(instr);
+            break;
+            
+        case TACOp::IF_EQ:
+        case TACOp::IF_NE:
+            genConditionalJump(instr);
+            break;
+            
+        case TACOp::LABEL:
+            genLabel(instr);
+            break;
+            
+        case TACOp::CALL:
+        case TACOp::CALL2:
+            genCall(instr);
+            break;
+            
+        case TACOp::RETURN:
+            genReturn(instr);
+            break;
+            
+        case TACOp::INDEX:
+        case TACOp::ARRAY_STORE:
+            genArrayAccess(instr);
+            break;
+            
+        case TACOp::TYPECAST:
+            // For now, treat typecast as assignment
+            genAssign(instr);
+            break;
+            
+        case TACOp::oth:
+            // This is a goto placeholder (from N marker) that gets backpatched with a label
+// String and array handling
