@@ -2498,4 +2498,508 @@ void MIPSGenerator::generateInstruction(const TACInstruction& instr) {
             
         case TACOp::oth:
             // This is a goto placeholder (from N marker) that gets backpatched with a label
-// String and array handling
+            // Treat it as a goto if result is non-empty
+            if (!instr.result.empty()) {
+                genGoto(instr);
+            }
+            // Otherwise ignore (not yet backpatched)
+            break;
+            
+        default:
+            mipsCode.push_back("    # Unhandled operation: " + opToStr(instr.op));
+            break;
+    }
+}
+
+// Main MIPS generation function
+void MIPSGenerator::generateMIPS(const vector<TACInstruction>& tacCode) {
+    reset();
+    
+    // PRE-PASS STAGE 1: Identify all pointer variables (results of & operations or malloc/calloc/realloc)
+    for (size_t i = 0; i < tacCode.size(); i++) {
+        const auto& instr = tacCode[i];
+        if (instr.op == TACOp::ASSIGN && instr.operand1.has_value()) {
+            string src = instr.operand1.value();
+            if (!src.empty() && src[0] == '&') {
+                // This is an address-of operation
+                pointerVars.insert(instr.result);
+                pointerSizes[instr.result] = 4; // Default to int* size
+            }
+        }
+        // Also mark results of malloc/calloc/realloc as pointers
+        if (instr.op == TACOp::CALL && instr.operand1.has_value()) {
+            string funcName = instr.operand1.value();
+            if (funcName == "malloc" || funcName == "calloc" || funcName == "realloc") {
+                pointerVars.insert(instr.result);
+                // Determine pointer size based on variable name heuristic
+                // Look ahead to see what this result is assigned to
+                string targetVar = instr.result;
+                if (i + 1 < tacCode.size()) {
+                    const auto& nextInstr = tacCode[i + 1];
+                    if (nextInstr.op == TACOp::ASSIGN && 
+                        nextInstr.operand1.has_value() && 
+                        nextInstr.operand1.value() == instr.result) {
+                        // Next instruction assigns this to another variable
+                        targetVar = nextInstr.result;
+                    }
+                }
+                
+                int ptrSize = 4;  // Default to int* size
+                if (targetVar.find("char") != string::npos || 
+                    targetVar.find("Char") != string::npos ||
+                    targetVar.find("str") != string::npos ||
+                    targetVar.find("Str") != string::npos ||
+                    (targetVar.length() >= 1 && targetVar[0] == 's')) {  // s, s1, s2, etc.
+                    ptrSize = 1;  // char* size
+                }
+                pointerSizes[instr.result] = ptrSize;
+            }
+        }
+        // Also mark INDEX results as pointers if loading from pointer-to-pointer
+        if (instr.op == TACOp::INDEX && instr.operand1.has_value()) {
+            string array = instr.operand1.value();
+            // If array is a pointer-to-pointer (like char**), result is a pointer
+            if (pointerVars.count(array) > 0 && pointerSizes.count(array) > 0) {
+                if (pointerSizes[array] == 4) {
+                    // This is a pointer-to-pointer
+                    pointerVars.insert(instr.result);
+                    // Determine the pointed-to type
+                    if (array.find("argv") != string::npos || 
+                        array.find("args") != string::npos ||
+                        array[0] == 's' ||
+                        array.find("str") != string::npos ||
+                        array.find("Str") != string::npos) {
+                        // Likely char**, so result is char* (size 1)
+                        pointerSizes[instr.result] = 1;
+                    } else {
+                        // Likely int**, so result is int* (size 4)
+                        pointerSizes[instr.result] = 4;
+                    }
+                }
+            }
+        }
+    }
+    
+    // PRE-PASS STAGE 1.5: Propagate pointer information through assignments
+    // This is needed because t97 = args[1] marks t97, but then val_str = t97 needs to propagate
+    for (size_t i = 0; i < tacCode.size(); i++) {
+        const auto& instr = tacCode[i];
+        if (instr.op == TACOp::ASSIGN && instr.operand1.has_value()) {
+            string src = instr.operand1.value();
+            // Skip address-of operations (already handled)
+            if (!src.empty() && src[0] == '&') continue;
+            // Propagate pointer info
+            if (pointerVars.count(src) > 0) {
+                pointerVars.insert(instr.result);
+                pointerSizes[instr.result] = pointerSizes[src];
+            }
+        }
+    }
+    
+    // PRE-PASS STAGE 2: Identify which function parameters are pointers
+    // We need to do this before processing parameter assignments because
+    // the callee function appears before the caller in TAC
+    functionParamIsPointer.clear();
+    
+    for (size_t i = 0; i < tacCode.size(); i++) {
+        const auto& instr = tacCode[i];
+        
+        // Look for function calls
+        if (instr.op == TACOp::CALL) {
+            string funcName = instr.operand1.value_or("");
+            
+            // Look backwards to find the parameters
+            vector<string> params;
+            for (int j = i - 1; j >= 0 && j >= (int)i - 20; j--) {
+                const auto& paramInstr = tacCode[j];
+                if (paramInstr.op == TACOp::ASSIGN && paramInstr.result == "param") {
+                    params.push_back(paramInstr.operand1.value_or(""));
+                } else if (params.size() > 0) {
+                    // Stop when we hit the first non-param instruction after seeing params
+                    break;
+                }
+            }
+            
+            // Parameters are in reverse order, so reverse them
+            reverse(params.begin(), params.end());
+            
+            // Mark which parameters are pointers (and their sizes)
+            for (size_t paramIdx = 0; paramIdx < params.size(); paramIdx++) {
+                if (pointerVars.count(params[paramIdx]) > 0) {
+                    functionParamIsPointer[{funcName, paramIdx}] = true;
+                    // Also store the pointer size
+                    if (pointerSizes.count(params[paramIdx]) > 0) {
+                        functionParamPointerSize[{funcName, paramIdx}] = pointerSizes[params[paramIdx]];
+                    } else {
+                        functionParamPointerSize[{funcName, paramIdx}] = 4;  // Default to int*
+                    }
+                }
+            }
+        }
+    }
+    
+    // Compute next-use information for better register allocation
+    computeNextUse(tacCode);
+    
+    // Add initial setup
+    dataSection.push_back(".data");
+    
+    // First, collect all static variable names from staticInitCode
+    map<string, int> staticVarDeclCount; // Count how many times each var is declared
+    for (const auto &init : staticInitCode) {
+        size_t eq = init.find(" = ");
+        if (eq == string::npos) continue;
+        string var = init.substr(0, eq);
+        staticVars.insert(var);
+        staticVarDeclCount[var]++;
+    }
+    
+    // Build map: which function owns which occurrence of each static variable
+    // Key insight: If a variable appears multiple times in .static_init, the extras
+    // are local statics. We find which function each local static belongs to by
+    // looking for the first ASSIGNMENT (not just use) in the TAC within that function.
+    map<string, string> staticOccurrenceToFunction; // "var_N" -> function name
+    map<string, int> staticVarSeenInTAC; // Track how many times we've seen assignments
+    string currentFuncContext = "";
+    
+    for (size_t i = 0; i < tacCode.size(); i++) {
+        const auto& instr = tacCode[i];
+        
+        // Track current function by LABEL instructions (not branch labels L_XX)
+        if (instr.op == TACOp::LABEL && instr.result.find("L_") != 0) {
+            currentFuncContext = instr.result;
+        }
+        
+        // Look for assignments TO static variables (not just uses)
+        if (instr.op == TACOp::ASSIGN && staticVars.count(instr.result)) {
+            string var = instr.result;
+            int occurrence = staticVarSeenInTAC[var]++;
+            string key = var + "_" + to_string(occurrence);
+            if (staticOccurrenceToFunction.count(key) == 0) {
+                staticOccurrenceToFunction[key] = currentFuncContext;
+            }
+        }
+    }
+    
+    // Process static initialization
+    map<string, int> staticOccurrenceIndex; // Tracks which occurrence we're at for each var name
+    currentFuncContext = "";
+    
+    for (const auto &init : staticInitCode) {
+        size_t eq = init.find(" = ");
+        if (eq == string::npos) continue;
+        string var = init.substr(0, eq);
+        string val = init.substr(eq + 3);
+        
+        // Resolve temporaries
+        if (!val.empty() && val[0] == 't') {
+            for (size_t k = 0; k < tacCode.size(); k++) {
+                const auto &t = tacCode[k];
+                if (t.op == TACOp::ASSIGN && t.result == val && t.operand1.has_value() && !t.operand2.has_value()) {
+                    val = t.operand1.value();
+                    break;
+                }
+            }
+        }
+        
+        // Determine label
+        string label;
+        int occurrence = staticOccurrenceIndex[var]++;
+        
+        if (staticVarDeclCount[var] == 1) {
+            // Only one declaration: this is a global static or simple local static
+            label = var;
+            globalStaticVars.insert(var);
+        } else {
+            // Multiple declarations: local statics shadowing each other
+            if (occurrence == 0) {
+                // First declaration: likely global, use plain name
+                label = var;
+                globalStaticVars.insert(var);
+            } else {
+                // Subsequent declarations: local statics, find which function owns it
+                string key = var + "_" + to_string(occurrence - 1); // TAC has 0-based indexing
+                if (staticOccurrenceToFunction.count(key)) {
+                    string funcName = staticOccurrenceToFunction[key];
+                    label = funcName + "_" + var + "_" + to_string(staticVarCounter++);
+                    // Store mapping: "funcName_var" -> actual label
+                    staticVarLabels[funcName + "_" + var] = label;
+                } else {
+                    // Fallback: couldn't find function, generate generic label
+                    label = var + "_local_" + to_string(staticVarCounter++);
+                }
+            }
+        }
+        
+        dataSection.push_back(label + ": .word " + val);
+    }
+    
+    // Reset for main code generation
+    currentFunc = "";
+    // Start code generation from beginning of TAC (static inits are not in tacCode)
+    size_t codeStartIndex = 0;
+    
+    mipsCode.push_back(".text");
+    mipsCode.push_back(".globl main");
+    
+    // First pass: Identify function names from LABEL and CALL instructions
+    functionNames.clear();
+    for (size_t i = codeStartIndex; i < tacCode.size(); i++) {
+        const auto& instr = tacCode[i];
+        // Track function names from CALL instructions
+        if (instr.op == TACOp::CALL || instr.op == TACOp::CALL2) {
+            if (instr.operand1.has_value()) {
+                string funcName = instr.operand1.value();
+                // Built-in functions are not user functions
+                if (funcName != "printf" && funcName != "scanf" && 
+                    funcName != "malloc" && funcName != "calloc" && 
+                    funcName != "realloc" && funcName != "free") {
+                    functionNames.insert(funcName);
+                }
+            }
+        }
+    }
+    // Also add "main" as it's always a function
+    functionNames.insert("main");
+    
+    // Second pass: collect all goto targets (instruction indices that need labels)
+    gotoTargetsSet.clear();  // Reset member variable
+    set<int> gotoTargets;    // Local variable for compatibility
+    for (size_t i = codeStartIndex; i < tacCode.size(); i++) {
+        const auto& instr = tacCode[i];
+        // Check for any instruction that has a numeric jump target
+        if (instr.isGoto || instr.op == TACOp::GOTO || instr.op == TACOp::IF_EQ || instr.op == TACOp::IF_NE) {
+            // result contains the target instruction INDEX (0-indexed, array index into tacCode)
+            try {
+                int targetIndex = stoi(instr.result);
+                // Insert this as a target that needs a label
+                gotoTargets.insert(targetIndex);
+                gotoTargetsSet.insert(targetIndex);  // Also add to member variable
+            } catch (...) {
+                // Not a number, it's a named label (like "main" or "skip1")
+                // These will be handled as TACOp::LABEL instructions
+            }
+        }
+    }
+    
+    // Detect function boundaries and generate code
+    bool inFunction = false;
+    int localVarCount = 0;
+    string lastFunction = "";
+    
+    for (size_t i = codeStartIndex; i < tacCode.size(); i++) {
+        const auto& instr = tacCode[i];
+        
+        // Track current instruction index for register allocation
+        currentInstrIndex = i;
+        
+        // The goto targets in 3AC use 0-indexed instruction indices
+        int instrIndex = i;
+        
+        // Detect function entry: LABEL instruction that's in the functionNames set
+        bool isFunctionLabel = (instr.op == TACOp::LABEL && functionNames.count(instr.result) > 0);
+        
+        // Process global variable initialization (before first function label)
+        if (!inFunction && !isFunctionLabel) {
+            // This is a global variable initialization
+            if (instr.op == TACOp::ASSIGN && instr.operand1.has_value() && !instr.operand2.has_value()) {
+                string globalVar = instr.result;
+                string value = instr.operand1.value();
+                
+                // Skip temporaries (they are not global variables)
+                if (!globalVar.empty() && globalVar[0] == 't' && isdigit(globalVar[1])) {
+                    continue;
+                }
+                
+                // Resolve the value if it's a temporary
+                if (!value.empty() && value[0] == 't' && isdigit(value[1])) {
+                    // Search backwards for the temporary's definition
+                    for (int j = i - 1; j >= 0; j--) {
+                        if (tacCode[j].op == TACOp::ASSIGN && 
+                            tacCode[j].result == value && 
+                            tacCode[j].operand1.has_value() && 
+                            !tacCode[j].operand2.has_value()) {
+                            value = tacCode[j].operand1.value();
+                            break;
+                        }
+                    }
+                }
+                
+                // Add to global variables set and data section
+                globalVars.insert(globalVar);
+                dataSection.push_back(globalVar + ": .word " + value);
+            }
+            continue;
+        }
+        
+        // Insert numeric label if this instruction is a goto target
+        if (gotoTargets.count(instrIndex)) {
+            mipsCode.push_back("L_" + to_string(instrIndex) + ":");
+        }
+        
+        if (isFunctionLabel) {
+            // If we were in a previous function, emit its epilogue
+            if (inFunction && !lastFunction.empty()) {
+                mipsCode.push_back(lastFunction + "_epilogue:");
+                emitEpilog(lastFunction);
+            }
+            
+            currentFunc = instr.result;
+            lastFunction = currentFunc;
+            // Count local variables (estimate)
+            localVarCount = 20;  // Default estimate
+            emitProlog(currentFunc, localVarCount);
+            inFunction = true;
+        }
+        
+        // Generate instruction (this may also generate a named label for TACOp::LABEL)
+        generateInstruction(instr);
+    }
+    
+    // Emit epilogue for the last function
+    if (inFunction && !lastFunction.empty()) {
+        mipsCode.push_back(lastFunction + "_epilogue:");
+        emitEpilog(lastFunction);
+    }
+}
+
+// Write MIPS code to file
+void MIPSGenerator::writeToFile(const string& filename) {
+    ofstream outFile(filename);
+    
+    // Write .data section
+    for (const auto& line : dataSection) {
+        outFile << line << "\n";
+    }
+    
+    outFile << "\n";
+    
+    // Write .text section
+    for (const auto& line : mipsCode) {
+        outFile << line << "\n";
+    }
+    
+    // Write runtime library functions
+    outFile << "\n# Runtime Library Functions\n";
+    outFile << "# malloc(size): Allocates 'size' bytes and returns pointer in $v0\n";
+    outFile << "malloc:\n";
+    outFile << "    move $a0, $a0  # size is already in $a0\n";
+    outFile << "    li $v0, 9      # syscall 9: sbrk (allocate heap memory)\n";
+    outFile << "    syscall        # returns pointer in $v0\n";
+    outFile << "    jr $ra         # return to caller\n";
+    outFile << "\n";
+    
+    outFile << "# calloc(num, size): Allocates num*size bytes, zeros it, returns pointer\n";
+    outFile << "calloc:\n";
+    outFile << "    # Calculate total size: num (in $a0) * size (in $a1)\n";
+    outFile << "    mul $t0, $a0, $a1  # $t0 = num * size\n";
+    outFile << "    move $t2, $t0      # Save total size in $t2\n";
+    outFile << "    \n";
+    outFile << "    # Allocate memory\n";
+    outFile << "    move $a0, $t0      # Size for allocation\n";
+    outFile << "    li $v0, 9          # syscall 9: sbrk\n";
+    outFile << "    syscall\n";
+    outFile << "    \n";
+    outFile << "    # Zero out allocated memory\n";
+    outFile << "    move $t3, $v0      # Pointer to start of memory\n";
+    outFile << "    move $t4, $t2      # Counter = total size\n";
+    outFile << "calloc_zero_loop:\n";
+    outFile << "    beqz $t4, calloc_done  # If counter == 0, done\n";
+    outFile << "    sb $zero, 0($t3)   # Store byte 0 at current address\n";
+    outFile << "    addiu $t3, $t3, 1  # Move to next byte\n";
+    outFile << "    addiu $t4, $t4, -1  # Decrement counter\n";
+    outFile << "    j calloc_zero_loop\n";
+    outFile << "calloc_done:\n";
+    outFile << "    # $v0 still contains the pointer\n";
+    outFile << "    jr $ra\n";
+    outFile << "\n";
+    
+    outFile << "# realloc(ptr, size): Reallocates memory, copies old data, returns new pointer\n";
+    outFile << "realloc:\n";
+    outFile << "    move $t0, $a0      # Save old pointer (first param)\n";
+    outFile << "    move $t1, $a1      # Save new size (second param)\n";
+    outFile << "    \n";
+    outFile << "    # Allocate new memory\n";
+    outFile << "    move $a0, $t1      # Size for allocation\n";
+    outFile << "    li $v0, 9          # syscall 9: sbrk\n";
+    outFile << "    syscall\n";
+    outFile << "    \n";
+    outFile << "    # Copy old data to new memory (simplified - copies size bytes)\n";
+    outFile << "    move $t2, $v0      # New pointer\n";
+    outFile << "    move $t3, $t0      # Old pointer\n";
+    outFile << "    move $t4, $t1      # Copy size bytes\n";
+    outFile << "realloc_copy_loop:\n";
+    outFile << "    beqz $t4, realloc_done\n";
+    outFile << "    lb $t5, 0($t3)     # Load byte from old\n";
+    outFile << "    sb $t5, 0($t2)     # Store to new\n";
+    outFile << "    addiu $t2, $t2, 1\n";
+    outFile << "    addiu $t3, $t3, 1\n";
+    outFile << "    addiu $t4, $t4, -1\n";
+    outFile << "    j realloc_copy_loop\n";
+    outFile << "realloc_done:\n";
+    outFile << "    move $v0, $t2      # Return new pointer (adjusted after loop)\n";
+    outFile << "    subu $v0, $v0, $t1 # Restore to start of allocated block\n";
+    outFile << "    jr $ra\n";
+    outFile << "\n";
+    
+    outFile << "# free(ptr): Frees allocated memory (no-op in simple implementation)\n";
+    outFile << "free:\n";
+    outFile << "    # In a simple implementation, we can't actually free memory\n";
+    outFile << "    # This is a no-op, but required for compatibility\n";
+    outFile << "    jr $ra\n";
+    outFile << "\n";
+    
+    outFile.close();
+}
+
+// Get complete MIPS code as string
+string MIPSGenerator::getOutput() {
+    string output;
+    
+    for (const auto& line : dataSection) {
+        output += line + "\n";
+    }
+    
+    output += "\n";
+    
+    for (const auto& line : mipsCode) {
+        output += line + "\n";
+    }
+    
+    return output;
+}
+
+// Reset generator state
+void MIPSGenerator::reset() {
+    mipsCode.clear();
+    dataSection.clear();
+    regDesc.clearAll();
+    addrDesc.clearAll();
+    varOffsets.clear();
+    currentOffset = 0;
+    frameSize = 0;
+    stringLiterals.clear();
+    labelMap.clear();
+    staticVars.clear();
+    paramCount = 0;
+    paramRegs.clear();
+}
+
+// Print descriptors for debugging
+void MIPSGenerator::printDescriptors() {
+    cout << "\n=== Register Descriptor ===" << endl;
+    for (const auto& [reg, var] : regDesc.regToVar) {
+        cout << reg << " -> " << var << endl;
+    }
+    
+    cout << "\n=== Address Descriptor ===" << endl;
+    for (const auto& [var, locs] : addrDesc.varToLocs) {
+        cout << var << " -> {";
+        for (const auto& loc : locs) {
+            cout << loc << ", ";
+        }
+        cout << "}" << endl;
+    }
+}
+
+#endif // MIPS_GENERATOR_H
