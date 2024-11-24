@@ -3831,4 +3831,4 @@ void generateMIPSFromTAC(const string& outputFilename) {
     
     cout << "\nMIPS code generation completed successfully!" << endl;
     cout << "========================================\n" << endl;
-}// Pointer operations complete
+}

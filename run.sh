@@ -1,20 +1,27 @@
 #!/bin/bash
 
-if [ $# -eq 0 ]; then
-    echo "Usage: $0 <input.c>"
+clear
+make clean
+make 
+
+if [ -z "$(ls -A test)" ]; then
+    echo "Empty Test directory"
     exit 1
 fi
 
-INPUT=$1
-BASENAME=$(basename "$INPUT" .c)
+echo " " | tee -a output.log
 
-echo "Compiling $INPUT..."
-./compiler "$INPUT"
+for file in test/*; do
+    echo "---------------------------------" | tee -a output.log
+    echo "Processing File: $file" | tee -a output.log
+    echo "---------------------------------" | tee -a output.log
+    echo " " | tee -a output.log
 
-if [ -f "output/${BASENAME}.asm" ]; then
-    echo "✓ Assembly generated: output/${BASENAME}.asm"
-    echo "✓ TAC generated: output/${BASENAME}.tac"
-else
-    echo "✗ Compilation failed"
-    exit 1
-fi
+    ./build/parser.out "$file" | tee -a output.log
+
+    echo " " | tee -a output.log
+    echo "---------------------------------" | tee -a output.log
+    echo "  Finished Processing $file  " | tee -a output.log
+    echo "---------------------------------" | tee -a output.log
+    echo " " | tee -a output.log
+done

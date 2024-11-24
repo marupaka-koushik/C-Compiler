@@ -1,28 +1,37 @@
-CC = g++
-CFLAGS = -std=c++17 -Wall -Wextra -g
+#Directories
+SRCDIR = src
+BUILDDIR = build
+
+# Tools
+YACC = /opt/homebrew/opt/bison/bin/bison
 LEX = flex
-YACC = bison
+CC = g++
+LDFLAGS = -lm
+CFLAGS = -I$(BUILDDIR) -std=c++17
 
-SOURCES = src/parser.tab.c src/lex.yy.c
-OBJECTS = $(SOURCES:.c=.o)
-TARGET = compiler
+# Files
+LEX_SRC = $(SRCDIR)/lexer.l
+YACC_SRC = $(SRCDIR)/parser.y
+LEX_OUT = $(BUILDDIR)/lex.yy.c
+YACC_OUT = $(BUILDDIR)/y.tab.cc
+OUTPUT_BIN = $(BUILDDIR)/parser.out
 
-all: $(TARGET)
+# Create build directory if not exists
+$(shell mkdir -p $(BUILDDIR))
 
-src/lex.yy.c: src/lexer.l
-	$(LEX) -o $@ $<
+# Default target
+all: build
 
-src/parser.tab.c src/parser.tab.h: src/parser.y
-	$(YACC) -d -o src/parser.tab.c $<
+# Build parser and lexer
+build: $(LEX_SRC) $(YACC_SRC)
+	$(YACC) -d -o $(YACC_OUT) $(YACC_SRC)
+	$(LEX) -o$(LEX_OUT) $(LEX_SRC)
+	$(CC) $(CFLAGS) $(LEX_OUT) $(YACC_OUT) -o $(OUTPUT_BIN) $(LDFLAGS)
+	@echo "Build completed!"
 
-$(TARGET): $(OBJECTS)
-	$(CC) $(CFLAGS) -o $@ $^
-
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
+# Clean build artifacts
 clean:
-	rm -f src/*.tab.* src/lex.yy.* $(OBJECTS) $(TARGET)
-	rm -rf output/*.asm output/*.tac
+	rm -f $(BUILDDIR)/*
+	@echo "Cleaned build files!"
 
-.PHONY: all clean
+.PHONY: all build clean

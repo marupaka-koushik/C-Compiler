@@ -1,170 +1,176 @@
+%option noyywrap yylineno
+
+digit   [0-9]
+digits  {digit}+
+hex_digit [0-9A-Fa-f]
+alpha   [A-Za-z]
+integer     {digits}
+hex_integer 0[xX]{hex_digit}+
+float       {digits}"."{digits}([eE][+-]?{digits})?
+id      ({alpha}|_)({alpha}|{digit}|_)*
+char    \'([^\'\\]|\\.)\'
+string  \"([^\"\\]|\\.)*\"
+space   [ \t\v\f\n]+
+
 %{
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include "parser.tab.h"
-
-int line_num = 1;
-int col_num = 1;
-
-#define YY_USER_ACTION \
-    col_num += yyleng;
-
-void yyerror(const char* s);
+    #include "y.tab.hh"
+    unordered_set<string> classOrStructOrUnion;
+    unordered_set<string> typedefNames;
+    
+    bool isTypedefName(const string& name) {
+        return typedefNames.count(name) > 0;
+    }
 %}
 
-%option noyywrap
-
-DIGIT       [0-9]
-LETTER      [a-zA-Z_]
-ALNUM       [a-zA-Z0-9_]
-HEX         [0-9a-fA-F]
-OCTAL       [0-7]
-
 %%
-
-[ \t]+              { /* Skip whitespace */ }
-\n                  { line_num++; col_num = 1; }
-
-"int"               { return INT; }
-"char"              { return CHAR; }
-"void"              { return VOID; }
-"float"             { return FLOAT; }
-"double"            { return DOUBLE; }
-"long"              { return LONG; }
-"short"             { return SHORT; }
-"unsigned"          { return UNSIGNED; }
-"signed"            { return SIGNED; }
-
-"if"                { return IF; }
-"else"              { return ELSE; }
-"while"             { return WHILE; }
-"for"               { return FOR; }
-"do"                { return DO; }
-"return"            { return RETURN; }
-"break"             { return BREAK; }
-"continue"          { return CONTINUE; }
-
-"struct"            { return STRUCT; }
-"union"             { return UNION; }
-"enum"              { return ENUM; }
-
-"+"                 { return PLUS; }
-"-"                 { return MINUS; }
-"*"                 { return STAR; }
-"/"                 { return DIVIDE; }
-"%"                 { return MOD; }
-
-"++"                { return INC; }
-"--"                { return DEC; }
-
-"="                 { return ASSIGN; }
-"+="                { return PLUS_ASSIGN; }
-"-="                { return MINUS_ASSIGN; }
-"*="                { return STAR_ASSIGN; }
-"/="                { return DIV_ASSIGN; }
-"%="                { return MOD_ASSIGN; }
-
-"=="                { return EQ; }
-"!="                { return NE; }
-"<"                 { return LT; }
-">"                 { return GT; }
-"<="                { return LE; }
-">="                { return GE; }
-
-"&&"                { return AND; }
-"||"                { return OR; }
-"!"                 { return NOT; }
-
-"&"                 { return AMPERSAND; }
-"|"                 { return PIPE; }
-"^"                 { return XOR; }
-"~"                 { return TILDE; }
-"<<"                { return LEFT_SHIFT; }
-">>"                { return RIGHT_SHIFT; }
-
-"("                 { return LPAREN; }
-")"                 { return RPAREN; }
-"{"                 { return LBRACE; }
-"}"                 { return RBRACE; }
-"["                 { return LBRACKET; }
-"]"                 { return RBRACKET; }
-
-";"                 { return SEMICOLON; }
-","                 { return COMMA; }
-"."                 { return DOT; }
-"->"                { return ARROW; }
-
-{LETTER}{ALNUM}*    { 
-                        yylval.str = strdup(yytext); 
-                        return IDENTIFIER; 
-                    }
-
-{DIGIT}+            { 
-                        yylval.ival = atoi(yytext); 
-                        return INTEGER_LITERAL; 
-                    }
-
-0[xX]{HEX}+         { 
-                        yylval.ival = strtol(yytext, NULL, 16); 
-                        return INTEGER_LITERAL; 
-                    }
-
-0{OCTAL}+           { 
-                        yylval.ival = strtol(yytext, NULL, 8); 
-                        return INTEGER_LITERAL; 
-                    }
-
-{DIGIT}+\.{DIGIT}+  { 
-                        yylval.fval = atof(yytext); 
-                        return FLOAT_LITERAL; 
-                    }
-
-\"([^\\\"]|\\.)*\"  { 
-                        yylval.str = strdup(yytext); 
-                        return STRING_LITERAL; 
-                    }
-
-'([^\\']|\\.)'      { 
-                        yylval.ival = yytext[1]; 
-                        return CHAR_LITERAL; 
-                    }
-
-"//".* { /* Single line comment */ }
-
-"/*"                { 
-                        int c;
-                        while ((c = yyinput()) != 0) {
-                            if (c == '\n') {
-                                line_num++;
-                                col_num = 1;
-                            } else if (c == '*') {
-                                if ((c = yyinput()) == '/') break;
+"//"[^\n]*    {/* Ignore Single Line Comments */}
+"/*"            {
+                    // Ignore Multi Line Comments
+                    int c;
+                    while((c = yyinput()) != 0){
+                        if(c == '\n')
+                            continue;
+                        else if(c == '*'){
+                            if((c = yyinput()) == '/')
+                                break;
+                            else
                                 unput(c);
-                            }
                         }
                     }
+                }
 
-.                   { 
-                        fprintf(stderr, "Lexical error: Unknown character '%s' at line %d, col %d\n", 
-                                yytext, line_num, col_num); 
-                    }
+auto        { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_AUTO); }
+bool        { yylval.node = createNode(NODE_KEYWORD, string(yytext)); yylval.node->offset = 1; return (KEYWORD_BOOL); }
+break       { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_BREAK); }
+case        { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_CASE); }
+char        { yylval.node = createNode(NODE_KEYWORD, string(yytext)); yylval.node->offset = 1; return (KEYWORD_CHAR); }
+class       { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_CLASS); }
+const       { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_CONST); }
+continue    { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_CONTINUE); }
+default     { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_DEFAULT); }
+delete      { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_DELETE); }
+do          { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_DO); }
+double      { yylval.node = createNode(NODE_KEYWORD, string(yytext)); yylval.node->offset = 8; return (KEYWORD_DOUBLE); }
+else        { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_ELSE); }
+enum        { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_ENUM); }
+extern      { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_EXTERN); }
+float       { yylval.node = createNode(NODE_KEYWORD, string(yytext)); yylval.node->offset = 4; return (KEYWORD_FLOAT); }
+for         { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_FOR); }
+goto        { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_GOTO); }
+if          { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_IF); }
+int         { yylval.node = createNode(NODE_KEYWORD, string(yytext)); yylval.node->offset = 4; return (KEYWORD_INT); }
+long        { yylval.node = createNode(NODE_KEYWORD, string(yytext)); yylval.node->offset = 8; return (KEYWORD_LONG); }
+new         { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_NEW); }
+nullptr     { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_NULLPTR); }
+private     { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_PRIVATE); }
+protected   { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_PROTECTED); }
+public      { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_PUBLIC); }
+register    { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_REGISTER); }
+return      { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_RETURN); }
+short       { yylval.node = createNode(NODE_KEYWORD, string(yytext)); yylval.node->offset = 2; return (KEYWORD_SHORT); }
+signed      { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_SIGNED); }
+sizeof      { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_SIZEOF); }
+static      { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_STATIC); }
+struct      { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_STRUCT); }
+switch      { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_SWITCH); }
+this        { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_THIS); }
+typedef     { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_TYPEDEF); }
+union       { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_UNION); }
+unsigned    { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_UNSIGNED); }
+until       { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_UNTIL); }
+void        { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_VOID); }
+volatile    { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_VOLATILE); }
+while       { yylval.node = createNode(NODE_KEYWORD, string(yytext)); return (KEYWORD_WHILE); }
+"printf"    { yylval.node = createNode(NODE_KEYWORD, string("printf")); return (KEYWORD_PRINTF); }
+"scanf"     { yylval.node = createNode(NODE_KEYWORD, string("scanf")); return (KEYWORD_SCANF); }
+"NULL"      { yylval.node = createNode(INTEGER_LITERAL, "0"); return (INTEGER); }
+"true"        { yylval.node = createNode(NODE_BOOLEAN_LITERAL, string(yytext) == "true" ? true : false); return (BOOLEAN_LITERAL); }
+"false"       { yylval.node = createNode(NODE_BOOLEAN_LITERAL, string(yytext) == "false" ? false : true); return (BOOLEAN_LITERAL); }
 
-%%
+"+"         { yylval.str = strdup(yytext); return (PLUS_OPERATOR); }
+"-"         { yylval.str = strdup(yytext); return (MINUS_OPERATOR); }
+"*"         { yylval.str = strdup(yytext); return (MULTIPLY_OPERATOR); }
+"/"         { yylval.str = strdup(yytext); return (DIVIDE_OPERATOR); }
+"%"         { yylval.str = strdup(yytext); return (MODULO_OPERATOR); }
+"--"        { yylval.str = strdup(yytext); return (DECREMENT_OPERATOR); }
+"++"        { yylval.str = strdup(yytext); return (INCREMENT_OPERATOR); }
 
-void lexer_error(const char* msg) {
-    fprintf(stderr, "Lexer Error at line %d, col %d: %s\n", line_num, col_num, msg);
-}
+"="         { yylval.str = strdup(yytext); return (ASSIGNMENT_OPERATOR); }
+"+="        { yylval.str = strdup(yytext); return (PLUS_ASSIGN_OPERATOR); }
+"-="        { yylval.str = strdup(yytext); return (MINUS_ASSIGN_OPERATOR); }
+"*="        { yylval.str = strdup(yytext); return (MULTIPLY_ASSIGN_OPERATOR); }
+"/="        { yylval.str = strdup(yytext); return (DIVIDE_ASSIGN_OPERATOR); }
+"%="        { yylval.str = strdup(yytext); return (MODULO_ASSIGN_OPERATOR); }
+"&="        { yylval.str = strdup(yytext); return (BITWISE_AND_ASSIGN_OPERATOR); }
+"|="        { yylval.str = strdup(yytext); return (BITWISE_OR_ASSIGN_OPERATOR); }
+"^="        { yylval.str = strdup(yytext); return (BITWISE_XOR_ASSIGN_OPERATOR); }
+">>="       { yylval.str = strdup(yytext); return (RIGHT_SHIFT_ASSIGN_OPERATOR); }
+"<<="       { yylval.str = strdup(yytext); return (LEFT_SHIFT_ASSIGN_OPERATOR); }
 
-int get_line_number() {
-    return line_num;
-}
+"=="        { yylval.str = strdup(yytext); return (EQUALS_COMPARISON_OPERATOR); }
+"!="        { yylval.str = strdup(yytext); return (NOT_EQUALS_OPERATOR); }
+">"         { yylval.str = strdup(yytext); return (GREATER_THAN_OPERATOR); }
+"<"         { yylval.str = strdup(yytext); return (LESS_THAN_OPERATOR); }
+">="        { yylval.str = strdup(yytext); return (GREATER_THAN_OR_EQUAL_OPERATOR); }
+"<="        { yylval.str = strdup(yytext); return (LESS_THAN_OR_EQUAL_OPERATOR); }
 
-int get_column_number() {
-    return col_num;
-}
+"&&"        { yylval.str = strdup(yytext); return (LOGICAL_AND_OPERATOR); }
+"||"        { yylval.str = strdup(yytext); return (LOGICAL_OR_OPERATOR); }
+"!"         { yylval.str = strdup(yytext); return (LOGICAL_NOT_OPERATOR); }
 
-void reset_lexer() {
-    line_num = 1;
-    col_num = 1;
-}
+"&"         { yylval.str = strdup(yytext); return (BITWISE_AND_OPERATOR); }
+"|"         { yylval.str = strdup(yytext); return (BITWISE_OR_OPERATOR); }
+"^"         { yylval.str = strdup(yytext); return (BITWISE_XOR_OPERATOR); }
+"<<"        { yylval.str = strdup(yytext); return (LEFT_SHIFT_OPERATOR); }
+">>"        { yylval.str = strdup(yytext); return (RIGHT_SHIFT_OPERATOR); }
+"~"         { yylval.str = strdup(yytext); return (BITWISE_NOT_OPERATOR); }
+
+"?"         { yylval.str = strdup(yytext); return (TERNARY_OPERATOR); }
+
+"."         { yylval.str = strdup(yytext); return (DOT_OPERATOR); }
+"::"        { yylval.str = strdup(yytext); return (SCOPE_RESOLUTION_OPERATOR); }
+
+"..."       { yylval.node = createNode(NODE_ELLIPSIS, string(yytext)); return (ELLIPSIS_OPERATOR); }
+
+".*"        { yylval.str = strdup(yytext); return (POINTER_TO_MEMBER_DOT_OPERATOR); }
+"->*"       { yylval.str = strdup(yytext); return (POINTER_TO_MEMBER_ARROW_OPERATOR); }
+"->"        { yylval.str = strdup(yytext); return (POINTER_TO_MEMBER_ARROW_OPERATOR); }
+
+{hex_integer}   { 
+                // Convert hex string to decimal for storage
+                long long value = strtoll(yytext, NULL, 16);
+                yylval.node = createNode(INTEGER_LITERAL, to_string(value)); 
+                return INTEGER; 
+            }
+{integer}   { yylval.node = createNode(INTEGER_LITERAL, yytext); return INTEGER; }
+{float}     { yylval.node = createNode(FLOAT_LITERAL, yytext); return FLOAT; }
+{char}      { yylval.node = createNode(NODE_CHAR_LITERAL, yytext); return (CHAR); }
+{string}    { yylval.node = createNode(NODE_STRING_LITERAL, string(yytext)); return (STRING); }
+{id}        { if(classOrStructOrUnion.count(yytext) > 0){
+                    yylval.node = createNode(NODE_TYPE, yytext); 
+                    return (TYPE_NAME);
+                }
+                else if(isTypedefName(yytext)){
+                    yylval.node = createNode(NODE_TYPE, yytext); 
+                    return (TYPEDEF_NAME);
+                }
+                else{
+                    yylval.node = createNode(NODE_IDENTIFIER, yytext); 
+                    return (ID); 
+                }
+            }
+
+
+";"         { yylval.str = strdup(yytext); return (SEMICOLON); }
+":"         { yylval.str = strdup(yytext); return (COLON); }
+","         { yylval.str = strdup(yytext); return (COMMA); }
+"{"         { yylval.str = strdup(yytext); return (LBRACE); }
+"}"         { yylval.str = strdup(yytext); return (RBRACE); }
+"("         { yylval.str = strdup(yytext); return (LPAREN); }
+")"         { yylval.str = strdup(yytext); return (RPAREN); }
+"["         { yylval.str = strdup(yytext); return (LBRACKET); }
+"]"         { yylval.str = strdup(yytext); return (RBRACKET); }
+
+{space}   { /* Ignore Spaces */ }
+.         { printf("Unrecognized Token: %s at line no: %d\n", yytext, yylineno); }
+%%s
