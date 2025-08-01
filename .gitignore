@@ -1,0 +1,10 @@
+build/
+*.o
+*.out
+a.out
+lex.yy.c
+y.tab.*
+.vscode/
+.DS_Store
+output/
+*.log
