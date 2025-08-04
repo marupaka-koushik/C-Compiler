@@ -5,8 +5,16 @@
 
 %%
 
+"int"       { printf("KEYWORD: %s\n", yytext); }
+"char"      { printf("KEYWORD: %s\n", yytext); }
+"void"      { printf("KEYWORD: %s\n", yytext); }
+"return"    { printf("KEYWORD: %s\n", yytext); }
+
+[a-zA-Z_][a-zA-Z0-9_]*  { printf("IDENTIFIER: %s\n", yytext); }
+[0-9]+      { printf("INTEGER: %s\n", yytext); }
+
 [ \t\n]+    { /* skip whitespace */ }
-.           { printf("CHAR: %s\n", yytext); }
+.           { printf("UNKNOWN: %s\n", yytext); }
 
 %%
 
