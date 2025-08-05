@@ -8,6 +8,10 @@
 "int"       { printf("KEYWORD: %s\n", yytext); }
 "char"      { printf("KEYWORD: %s\n", yytext); }
 "void"      { printf("KEYWORD: %s\n", yytext); }
+"if"        { printf("KEYWORD: %s\n", yytext); }
+"else"      { printf("KEYWORD: %s\n", yytext); }
+"while"     { printf("KEYWORD: %s\n", yytext); }
+"for"       { printf("KEYWORD: %s\n", yytext); }
 "return"    { printf("KEYWORD: %s\n", yytext); }
 
 [a-zA-Z_][a-zA-Z0-9_]*  { printf("IDENTIFIER: %s\n", yytext); }
