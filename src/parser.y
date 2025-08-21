@@ -8,10 +8,11 @@ void yyerror(const char *s);
 
 %token IDENTIFIER INTEGER
 %token INT CHAR VOID
-%token IF ELSE WHILE RETURN
+%token IF ELSE WHILE FOR RETURN
 %token SEMICOLON COMMA
 %token PLUS MINUS STAR SLASH
 %token LPAREN RPAREN LBRACE RBRACE
+%token EQ NE LT GT LE GE
 
 %%
 
@@ -38,13 +39,17 @@ compound_stmt:
     ;
 
 statement_list:
-    statement
+    /* empty */
     | statement_list statement
     ;
 
 statement:
     expression SEMICOLON
+    | IF LPAREN expression RPAREN statement
+    | IF LPAREN expression RPAREN statement ELSE statement
+    | WHILE LPAREN expression RPAREN statement
     | RETURN expression SEMICOLON
+    | compound_stmt
     ;
 
 expression:
@@ -52,6 +57,13 @@ expression:
     | INTEGER
     | expression PLUS expression
     | expression MINUS expression
+    | expression STAR expression
+    | expression SLASH expression
+    | expression EQ expression
+    | expression NE expression
+    | expression LT expression
+    | expression GT expression
+    | LPAREN expression RPAREN
     ;
 
 %%
