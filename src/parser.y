@@ -10,8 +10,8 @@ void yyerror(const char *s);
 %token INT CHAR VOID
 %token IF ELSE WHILE FOR RETURN
 %token SEMICOLON COMMA
-%token PLUS MINUS STAR SLASH
-%token LPAREN RPAREN LBRACE RBRACE
+%token PLUS MINUS STAR SLASH ASSIGN
+%token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET
 %token EQ NE LT GT LE GE
 
 %%
@@ -26,12 +26,19 @@ declaration_list:
     ;
 
 declaration:
-    type_specifier IDENTIFIER SEMICOLON
-    | type_specifier IDENTIFIER LPAREN RPAREN compound_stmt
+    type_specifier declarator SEMICOLON
+    | type_specifier declarator compound_stmt
     ;
 
 type_specifier:
     INT | CHAR | VOID
+    ;
+
+declarator:
+    IDENTIFIER
+    | STAR declarator
+    | declarator LBRACKET INTEGER RBRACKET
+    | declarator LPAREN RPAREN
     ;
 
 compound_stmt:
@@ -63,6 +70,9 @@ expression:
     | expression NE expression
     | expression LT expression
     | expression GT expression
+    | expression ASSIGN expression
+    | STAR expression
+    | expression LBRACKET expression RBRACKET
     | LPAREN expression RPAREN
     ;
 
