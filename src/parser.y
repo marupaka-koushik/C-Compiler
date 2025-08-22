@@ -85,3 +85,5 @@ void yyerror(const char *s) {
 int main() {
     return yyparse();
 }
+
+/* Struct declarations will be added */
