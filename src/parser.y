@@ -448,3 +448,354 @@ struct_declaration_list
 struct_declaration
     : specifier_qualifier_list struct_declarator_list SEMICOLON {
         $$ = createNode(NODE_STRUCT_DECLARATION, monostate(), $1, $2);
+    }
+    ;
+
+
+
+specifier_qualifier_list
+	: type_specifier specifier_qualifier_list {$$ = createNode(NODE_SPECIFIER_QUALIFIER_LIST, monostate(), $1, $2); }
+	| type_specifier { $$ = $1; }
+	| type_qualifier specifier_qualifier_list { $$ = createNode(NODE_SPECIFIER_QUALIFIER_LIST, monostate(), $1, $2); }
+	| type_qualifier { $$ = $1; }
+	;
+
+struct_declarator_list
+    : struct_declarator { 
+        $$ = createNode(NODE_STRUCT_DECLARATOR_LIST, monostate(), $1); 
+    }
+    | struct_declarator_list COMMA struct_declarator { 
+        $$ = $1;
+        $$->children.push_back($3);
+    }
+    ;
+
+struct_declarator
+	: declarator { $$ = $1; }
+	| COLON constant_expression { $$ = $2; }
+	| declarator COLON constant_expression { $$ = createNode(NODE_STRUCT_DECLARATOR, monostate(), $1, $3); }
+	;
+
+
+type_qualifier
+	: KEYWORD_CONST { $$ = $1; }
+	| KEYWORD_VOLATILE { $$ = $1; }
+	;
+
+declarator
+    : pointer direct_declarator { 
+        ASTNode* lastPointer = $1;
+        while (!lastPointer->children.empty() && lastPointer->children[0]->type == NODE_POINTER) {
+            lastPointer = lastPointer->children[0];
+        }
+        lastPointer->addChild($2);
+        $$ = createNode(NODE_DECLARATOR, monostate(), $1);
+    }
+    | direct_declarator { 
+        $$ = createNode(NODE_DECLARATOR, monostate(), $1); 
+    }
+    ;
+
+
+direct_declarator
+    : ID { 
+        $$ = $1;
+    }
+    | LPAREN declarator RPAREN { 
+        $$ = $2;
+    }
+    | direct_declarator LBRACKET constant_expression RBRACKET { 
+        $$ = createNode(ARRAY, monostate(), $1, $3);  
+    }
+    | direct_declarator LBRACKET RBRACKET { 
+        $$ = createNode(ARRAY, monostate(), $1, nullptr); 
+    }
+    | direct_declarator LPAREN parameter_type_list RPAREN { 
+        $$ = createNode(NODE_DECLARATOR, monostate(), $1, $3); 
+    }
+    | direct_declarator LPAREN identifier_list RPAREN { 
+        $$ = createNode(NODE_DECLARATOR, monostate(), $1, $3); 
+    }
+    | direct_declarator LPAREN RPAREN { 
+        $$ = createNode(NODE_DECLARATOR, monostate(), $1, nullptr); 
+    }
+    ;
+
+
+pointer
+	: MULTIPLY_OPERATOR { $$ = createNode(NODE_POINTER, string($1)); }
+	| MULTIPLY_OPERATOR type_qualifier_list { $$ = createNode(NODE_POINTER, string($1), $2); }
+	| MULTIPLY_OPERATOR pointer { $$ = createNode(NODE_POINTER, string($1), $2); }
+	| MULTIPLY_OPERATOR type_qualifier_list pointer { $$ = createNode(NODE_POINTER, string($1), $2, $3); }
+	;
+
+type_qualifier_list
+    : type_qualifier { 
+        $$ = createNode(NODE_TYPE_QUALIFIER_LIST, monostate(), $1); 
+    }
+    | type_qualifier_list type_qualifier { 
+        $$ = $1;
+        $$->children.push_back($2);
+    }
+    ;
+
+
+parameter_type_list
+    : parameter_list { 
+        $$ = $1; 
+    }
+    | parameter_list COMMA ELLIPSIS_OPERATOR { 
+        $$ = createNode(NODE_PARAMETER_TYPE_LIST, monostate(), $1);
+        $$->children.push_back($3);
+    }
+    ;
+
+
+parameter_list
+    : parameter_declaration { 
+        $$ = createNode(NODE_PARAMETER_LIST, monostate(), $1); 
+    }
+    | parameter_list COMMA parameter_declaration { 
+        $$ = $1;
+        $$->children.push_back($3);
+    }
+    ;
+
+parameter_declaration
+	: declaration_specifiers declarator { $$ = createNode(NODE_PARAMETER_DECLARATION, monostate(), $1, $2); }
+	| declaration_specifiers abstract_declarator { $$ = createNode(NODE_PARAMETER_DECLARATION, monostate(), $1, $2); }
+	| declaration_specifiers { $$ = $1; }
+	;
+
+identifier_list
+    : ID { 
+        $$ = createNode(NODE_IDENTIFIER_LIST, monostate(), $1); 
+    }
+    | identifier_list COMMA ID { 
+        $$ = $1;
+        $$->children.push_back($3);
+    }
+    ;
+
+type_name
+	: specifier_qualifier_list { $$ = $1; }
+	| specifier_qualifier_list abstract_declarator { $$ = createNode(NODE_TYPE_NAME, monostate(), $1, $2); }
+	;
+
+abstract_declarator
+	: pointer {  $$ = $1;}
+	| direct_abstract_declarator { $$ = createNode(NODE_ABSTRACT_DECLARATOR, monostate(), $1); }
+	| pointer direct_abstract_declarator { $$ = createNode(NODE_ABSTRACT_DECLARATOR, monostate(), $1, $2); }
+	;
+
+direct_abstract_declarator
+	: LPAREN abstract_declarator RPAREN {  $$ = $2; }
+	| LBRACKET RBRACKET { $$ = createNode(NODE_DIRECT_ABSTRACT_DECLARATOR, monostate()); }
+	| LBRACKET constant_expression RBRACKET {  $$ = $2; }
+	| direct_abstract_declarator LBRACKET RBRACKET  {  $$ = $1; } 
+	| direct_abstract_declarator LBRACKET constant_expression RBRACKET { $$ = createNode(NODE_DIRECT_ABSTRACT_DECLARATOR, monostate(), $1, $3); }
+	| LPAREN RPAREN { $$ = createNode(NODE_DIRECT_ABSTRACT_DECLARATOR, monostate()); }
+	| LPAREN parameter_type_list RPAREN {  $$ = $2; }
+	| direct_abstract_declarator LPAREN RPAREN {  $$ = $1; }
+	| direct_abstract_declarator LPAREN parameter_type_list RPAREN { $$ = createNode(NODE_DIRECT_ABSTRACT_DECLARATOR, monostate(), $1, $3); }
+	;
+
+initializer
+	: assignment_expression { $$ = $1; }
+	| LBRACE initializer_list RBRACE {  $$ = $2; }
+	| LBRACE initializer_list COMMA RBRACE {  $$ = $2; }
+	;
+
+initializer_list
+    : initializer { 
+        $$ = createNode(NODE_INITIALIZER_LIST, monostate(), $1); 
+    }
+    | initializer_list COMMA initializer { 
+        $$ = $1;
+        $$->children.push_back($3);
+    }
+    ;
+
+statement
+	: labeled_statement { $$ = $1; }
+	| compound_statement { $$ = $1; }
+	| expression_statement { $$ = $1; }
+	| selection_statement { $$ = $1; }
+	| iteration_statement { $$ = $1; }
+	| jump_statement { $$ = $1; }
+	| try_catch_statement {$$ = $1; }
+    | io_statement{$$ = $1;}
+	;
+
+io_statement
+    : KEYWORD_PRINTF LPAREN STRING RPAREN SEMICOLON 
+        { 
+            $$ = createNode(NODE_IO_STATEMENT, monostate(), $1, $3); 
+        }
+    | KEYWORD_PRINTF LPAREN STRING COMMA argument_expression_list RPAREN SEMICOLON 
+        {  
+            $$ = createNode(NODE_IO_STATEMENT, monostate(), $1, $3, $5); 
+        }
+    | KEYWORD_SCANF LPAREN STRING COMMA argument_expression_list RPAREN SEMICOLON 
+        { 
+            $$ = createNode(NODE_IO_STATEMENT, monostate(), $1, $3, $5);
+        }
+    ;
+try_catch_statement
+    : KEYWORD_TRY compound_statement catch_clauses
+    ;
+
+catch_clauses
+    : catch_clause
+    | catch_clauses catch_clause
+    ;
+
+catch_clause
+    : KEYWORD_CATCH LPAREN parameter_declaration RPAREN compound_statement
+    | KEYWORD_CATCH LPAREN ELLIPSIS_OPERATOR RPAREN compound_statement
+    ;	
+
+labeled_statement
+	: ID COLON statement { $$ = createNode(NODE_LABELED_STATEMENT, monostate(), $1, $3); }
+	| KEYWORD_CASE constant_expression COLON statement { $$ = createNode(NODE_LABELED_STATEMENT,monostate(), $1, $2, $4); }
+	| KEYWORD_DEFAULT COLON statement { $$ = createNode(NODE_LABELED_STATEMENT, monostate(), $1, $3); }
+	;
+
+compound_statement
+	: LBRACE RBRACE { $$ = createNode(NODE_COMPOUND_STATEMENT, monostate()); }
+	| LBRACE statement_list RBRACE { $$ = $2; }
+	| LBRACE declaration_list RBRACE { $$ = $2; }
+	| LBRACE declaration_list statement_list RBRACE { $$ = createNode(NODE_COMPOUND_STATEMENT, monostate(), $2, $3); }
+	;
+
+declaration_list
+    : declaration { 
+        $$ = createNode(NODE_DECLARATION_LIST, monostate(), $1); 
+    }
+    | declaration_list declaration { 
+        $$ = $1;
+        $$->children.push_back($2);
+    }
+    ;
+
+statement_list
+    : statement { 
+        $$ = createNode(NODE_STATEMENT_LIST, monostate(), $1); 
+    }
+    | statement_list statement { 
+        $$ = $1;
+        $$->children.push_back($2);
+    }
+    ;
+
+expression_statement
+	: SEMICOLON { $$ = createNode(NODE_EXPRESSION_STATEMENT, monostate()); }
+	| expression SEMICOLON { $$ = $1; }
+	;
+
+selection_statement
+    : KEYWORD_IF LPAREN expression RPAREN statement %prec LOWER_THAN_ELSE 
+        { $$ = createNode(NODE_SELECTION_STATEMENT,monostate(), $1, $3, $5); }
+    | KEYWORD_IF LPAREN expression RPAREN statement KEYWORD_ELSE statement 
+        { $$ = createNode(NODE_SELECTION_STATEMENT,monostate() , $1, $3, $5, $7); }
+    | KEYWORD_SWITCH LPAREN expression RPAREN statement 
+        { $$ = createNode(NODE_SELECTION_STATEMENT, monostate(), $1, $3, $5); }
+    ;
+
+iteration_statement
+    : KEYWORD_WHILE LPAREN expression RPAREN statement
+    | KEYWORD_DO statement KEYWORD_WHILE LPAREN expression RPAREN
+    | KEYWORD_FOR LPAREN expression_statement expression_statement expression RPAREN statement
+    | KEYWORD_FOR LPAREN expression_statement expression_statement expression_statement RPAREN statement
+    | KEYWORD_FOR LPAREN declaration expression_statement expression RPAREN statement
+    | KEYWORD_FOR LPAREN declaration expression_statement expression_statement RPAREN statement
+    ;
+
+
+jump_statement
+	: KEYWORD_GOTO ID SEMICOLON { $$ = createNode(NODE_JUMP_STATEMENT, monostate(), $1, $2); }
+	| KEYWORD_CONTINUE SEMICOLON { $$ = $1;}
+	| KEYWORD_BREAK SEMICOLON { $$ = $1; }
+	| KEYWORD_RETURN SEMICOLON { $$ = $1; }
+	| KEYWORD_RETURN expression SEMICOLON { $$ = createNode(NODE_JUMP_STATEMENT, monostate(), $1, $2); }
+	| KEYWORD_THROW STRING SEMICOLON
+    | KEYWORD_THROW SEMICOLON
+	;
+
+translation_unit
+    : external_declaration {
+        $$ = $1;
+    }
+    | translation_unit external_declaration {
+        $$ = createNode(NODE_TRANSLATION_UNIT, monostate(), $1, $2);
+    }
+    ;
+
+
+external_declaration
+	: function_definition { $$ = $1; }
+	| declaration { $$ = $1; }
+	;
+
+function_definition
+    : declaration_specifiers declarator declaration_list compound_statement {
+        $$ = createNode(NODE_FUNCTION_DEFINITION, monostate(), $1, $2, $3, $4);
+        addFunctionToSymbolTable($1, $2);
+    }
+    | declaration_specifiers declarator compound_statement {
+        $$ = createNode(NODE_FUNCTION_DEFINITION, monostate(), $1, $2, $3);
+        addFunctionToSymbolTable($1, $2);
+    }
+    | declarator declaration_list compound_statement {
+        $$ = createNode(NODE_FUNCTION_DEFINITION, monostate(), $1, $2, $3);
+        addFunctionToSymbolTable(nullptr, $1);
+    }
+    | declarator compound_statement {
+        $$ = createNode(NODE_FUNCTION_DEFINITION, monostate(), $1, $2);
+        addFunctionToSymbolTable(nullptr, $1);
+    }
+    ;
+
+
+%%
+
+void yyerror(const char *s) {
+    extern char *yytext;
+    extern int yylineno;
+    cout << "Error: " << s << " at '" << yytext << "' on line " << yylineno << endl;
+}
+
+// Function to register a typedef name for lexer feedback
+void registerTypedefName(const string& name) {
+    typedefNames.insert(name);
+}
+
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        cout << "Usage: " << argv[0] << " <input_file>" << endl;
+        return 1;
+    }
+
+    yyin = fopen(argv[1], "r");
+
+    if (!yyin) {
+        cout << "Error opening file" << endl;
+        return 1;
+    }
+
+    int result = yyparse();
+
+    fclose(yyin);
+
+    if (result) {
+        cout << "Parsing completed with errors." << endl;
+        return 1;
+    } else {
+        cout << "Parsing completed successfully!" << endl;
+    }
+
+	printSymbolTable();
+
+    return 0;
+}
