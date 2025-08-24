@@ -298,3 +298,153 @@ declaration
             // Also add struct/class members if present
             for (ASTNode* child : $1->children) {
                 if (child && ASTNode::nodeTypeToString(child->type) == "STRUCT_SPECIFIER") {
+                    addStructMembersToSymbolTable(child);
+                } else if (child && ASTNode::nodeTypeToString(child->type) == "CLASS_SPECIFIER") {
+                    addClassMembersToSymbolTable(child);
+                }
+            }
+        } else {
+            // Regular variable declaration
+            if(ASTNode::nodeTypeToString($1->children[0]->type) == "STRUCT_SPECIFIER"){
+                addStructMembersToSymbolTable($1->children[0]);
+                addStructVariablesToSymbolTable($1->children[0], $2);
+            }
+            else if(ASTNode::nodeTypeToString($1->children[0]->type) == "CLASS_SPECIFIER"){
+                // addClassMembersToSymbolTable($1->children[0]);
+                addClassVariablesToSymbolTable($1->children[0], $2);
+            }
+            else {
+                // Use the new function that checks for typedef'd types
+                addDeclaratorsWithTypedefToSymbolTable($1, $2);
+            }
+        }
+    };
+
+
+
+declaration_specifiers
+    : declaration_specifier { 
+        $$ = createNode(NODE_DECLARATION_SPECIFIERS, monostate(), $1); 
+
+    }
+    | declaration_specifiers declaration_specifier { 
+        $$ = $1;
+        $$->children.push_back($2);
+    }
+    ;
+
+declaration_specifier
+    : storage_class_specifier { $$ = $1; }
+    | type_specifier { $$ = $1; }
+    | type_qualifier { $$ = $1; }
+    ;
+
+init_declarator_list
+    : init_declarator { 
+        $$ = createNode(NODE_INIT_DECLARATOR_LIST, monostate(), $1); 
+    }
+    | init_declarator_list COMMA init_declarator { 
+        $$ = $1;
+        $$->children.push_back($3);
+    }
+    ;
+
+init_declarator
+    : declarator { 
+        $$ = createNode(NODE_INIT_DECLARATOR, monostate(), $1, nullptr); 
+    }
+
+	
+    | declarator ASSIGNMENT_OPERATOR initializer { 
+        $$ = createNode(NODE_INIT_DECLARATOR, monostate(), $1, $3);
+    }
+    ;
+
+storage_class_specifier
+    : KEYWORD_TYPEDEF   { $$ = $1; }
+    | KEYWORD_EXTERN    { $$ = $1; }
+    | KEYWORD_STATIC    { $$ = $1; }
+    | KEYWORD_AUTO      { $$ = $1; }
+    | KEYWORD_REGISTER  { $$ = $1; }
+    ;
+
+
+type_specifier
+	: KEYWORD_VOID { $$ = $1; }
+	| KEYWORD_CHAR { $$ = $1; }
+	| KEYWORD_SHORT { $$ = $1; }
+	| KEYWORD_INT { $$ = $1;}
+    | KEYWORD_BOOL { $$ = $1; }
+	| KEYWORD_LONG { $$ = $1; }
+	| KEYWORD_FLOAT { $$ = $1; }
+	| KEYWORD_DOUBLE { $$ = $1; }
+	| KEYWORD_SIGNED { $$ = $1; }
+    | KEYWORD_UNSIGNED { $$ = $1; }
+	| struct_specifier  { $$ = $1;}
+    | class_specifier { $$ = $1; }
+    | TYPEDEF_NAME { $$ = $1; }
+	;
+class_specifier
+    : KEYWORD_CLASS ID LBRACE member_declaration_list RBRACE
+        { 
+            $$ = createNode(NODE_CLASS_SPECIFIER, monostate(), $2, $4); 
+        }
+    | KEYWORD_CLASS TYPEDEF_NAME LBRACE member_declaration_list RBRACE
+        { 
+            $$ = createNode(NODE_CLASS_SPECIFIER, monostate(), $2, $4); 
+        }
+    | KEYWORD_CLASS LBRACE member_declaration_list RBRACE  // New rule for anonymous class
+        { 
+            $$ = createNode(NODE_CLASS_SPECIFIER, monostate(), $3); 
+        }
+    | KEYWORD_CLASS ID
+        { $$ = createNode(NODE_CLASS_SPECIFIER, monostate(), $2);}
+    | KEYWORD_CLASS TYPEDEF_NAME
+        { $$ = createNode(NODE_CLASS_SPECIFIER, monostate(), $2);}
+    ;
+
+member_declaration_list
+    : member_declaration
+        { $$ = createNode(NODE_MEMBER_DECLARATION_LIST, monostate(), $1); }
+    | member_declaration_list member_declaration
+        { $$ = $1; $$->children.push_back($2); }
+    ;
+
+member_declaration
+    : access_specifier COLON
+        { $$ = createNode(NODE_ACCESS_SPECIFIER, monostate(), $1); }
+    | declaration
+        { $$ = $1; }
+    ;
+
+access_specifier
+    : KEYWORD_PUBLIC { $$ = $1; }
+    | KEYWORD_PRIVATE { $$ = $1; }
+    | KEYWORD_PROTECTED { $$ = $1; }
+    ;
+struct_specifier
+    : KEYWORD_STRUCT ID LBRACE struct_declaration_list RBRACE  
+        { $$ = createNode(NODE_STRUCT_SPECIFIER,monostate(), $1, $2, $4); }
+    | KEYWORD_STRUCT TYPEDEF_NAME LBRACE struct_declaration_list RBRACE  
+        { $$ = createNode(NODE_STRUCT_SPECIFIER,monostate(), $1, $2, $4); }
+    | KEYWORD_STRUCT LBRACE struct_declaration_list RBRACE  
+        { $$ = createNode(NODE_STRUCT_SPECIFIER, monostate(), $1, $3); }
+    | KEYWORD_STRUCT ID 
+        { $$ = createNode(NODE_STRUCT_SPECIFIER,monostate(), $1, $2); }
+    | KEYWORD_STRUCT TYPEDEF_NAME
+        { $$ = createNode(NODE_STRUCT_SPECIFIER,monostate(), $1, $2); }
+    ;
+
+struct_declaration_list
+    : struct_declaration { 
+        $$ = createNode(NODE_STRUCT_DECLARATION_LIST, monostate(), $1); 
+    }
+    | struct_declaration_list struct_declaration { 
+        $$ = $1;
+        $$->children.push_back($2);
+    }
+    ;
+
+struct_declaration
+    : specifier_qualifier_list struct_declarator_list SEMICOLON {
+        $$ = createNode(NODE_STRUCT_DECLARATION, monostate(), $1, $2);
