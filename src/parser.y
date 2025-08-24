@@ -148,3 +148,153 @@ unary_expression
 	| KEYWORD_NEW LPAREN type_name RPAREN { $$ = createNode(NODE_UNARY_EXPRESSION, monostate(), $3); }
 	| KEYWORD_NEW LPAREN type_name RPAREN LBRACKET expression RBRACKET { $$ = createNode(NODE_UNARY_EXPRESSION, monostate(), $3, $6); }
 	| KEYWORD_DELETE cast_expression
+	| KEYWORD_DELETE LBRACKET RBRACKET cast_expression 
+	;
+
+
+unary_operator
+	: BITWISE_AND_OPERATOR { $$ = createNode(NODE_UNARY_OPERATOR, monostate()); }
+	| MULTIPLY_OPERATOR { $$ = createNode(NODE_UNARY_OPERATOR, monostate()); }
+	| PLUS_OPERATOR { $$ = createNode(NODE_UNARY_OPERATOR, monostate()); }
+	| MINUS_OPERATOR { $$ = createNode(NODE_UNARY_OPERATOR, monostate()); }
+	| BITWISE_NOT_OPERATOR { $$ = createNode(NODE_UNARY_OPERATOR, monostate()); }
+	| LOGICAL_NOT_OPERATOR { $$ = createNode(NODE_UNARY_OPERATOR, monostate()); }
+	;
+
+cast_expression
+	: unary_expression { $$ = $1; }
+	| LPAREN type_name RPAREN cast_expression { $$ = createNode(NODE_CAST_EXPRESSION, monostate(), $2, $4); }
+	;
+
+multiplicative_expression
+	: cast_expression { $$ = $1; }
+	| multiplicative_expression MULTIPLY_OPERATOR cast_expression { $$ = createNode(NODE_MULTIPLICATIVE_EXPRESSION, monostate(), $1, $3); }
+	| multiplicative_expression DIVIDE_OPERATOR cast_expression { $$ = createNode(NODE_MULTIPLICATIVE_EXPRESSION, monostate(), $1, $3); }
+	| multiplicative_expression MODULO_OPERATOR cast_expression { $$ = createNode(NODE_MULTIPLICATIVE_EXPRESSION, monostate(), $1, $3); }
+	;
+
+additive_expression
+	: multiplicative_expression { $$ = $1; }
+	| additive_expression PLUS_OPERATOR multiplicative_expression { $$ = createNode(NODE_ADDITIVE_EXPRESSION, monostate(), $1, $3); }
+	| additive_expression MINUS_OPERATOR multiplicative_expression { $$ = createNode(NODE_ADDITIVE_EXPRESSION, monostate(), $1, $3); }
+	;
+
+shift_expression
+	: additive_expression { $$ = $1; }
+	| shift_expression LEFT_SHIFT_OPERATOR additive_expression { $$ = createNode(NODE_SHIFT_EXPRESSION, monostate(), $1, $3); }
+	| shift_expression RIGHT_SHIFT_OPERATOR additive_expression { $$ = createNode(NODE_SHIFT_EXPRESSION, monostate(), $1, $3); }
+	;
+
+relational_expression
+	: shift_expression { $$ = $1; }
+	| relational_expression LESS_THAN_OPERATOR shift_expression { $$ = createNode(NODE_RELATIONAL_EXPRESSION, monostate(), $1, $3); }
+	| relational_expression GREATER_THAN_OPERATOR shift_expression { $$ = createNode(NODE_RELATIONAL_EXPRESSION, monostate(), $1, $3); }
+	| relational_expression LESS_THAN_OR_EQUAL_OPERATOR shift_expression { $$ = createNode(NODE_RELATIONAL_EXPRESSION, monostate(), $1, $3); }
+	| relational_expression GREATER_THAN_OR_EQUAL_OPERATOR shift_expression { $$ = createNode(NODE_RELATIONAL_EXPRESSION, monostate(), $1, $3); }
+	;
+
+equality_expression
+	: relational_expression { $$ = $1; }
+	| equality_expression EQUALS_COMPARISON_OPERATOR relational_expression { $$ = createNode(NODE_EQUALITY_EXPRESSION, monostate(), $1, $3); }
+	| equality_expression NOT_EQUALS_OPERATOR relational_expression { $$ = createNode(NODE_EQUALITY_EXPRESSION, monostate(), $1, $3); }
+	;
+
+and_expression
+	: equality_expression { $$ = $1; }
+	| and_expression BITWISE_AND_OPERATOR equality_expression { $$ = createNode(NODE_AND_EXPRESSION, monostate(), $1, $3); }
+	;
+
+exclusive_or_expression
+	: and_expression { $$ = $1; }
+	| exclusive_or_expression BITWISE_XOR_OPERATOR and_expression { $$ = createNode(NODE_EXCLUSIVE_OR_EXPRESSION, monostate(), $1, $3); }
+	;
+
+inclusive_or_expression
+	: exclusive_or_expression { $$ = $1; }
+	| inclusive_or_expression BITWISE_OR_OPERATOR exclusive_or_expression { $$ = createNode(NODE_INCLUSIVE_OR_EXPRESSION, monostate(), $1, $3); }
+	;
+
+logical_and_expression
+	: inclusive_or_expression { $$ = $1; }
+	| logical_and_expression LOGICAL_AND_OPERATOR inclusive_or_expression { $$ = createNode(NODE_LOGICAL_AND_EXPRESSION, monostate(), $1, $3); }
+	;
+
+logical_or_expression
+	: logical_and_expression { $$ = $1; }
+	| logical_or_expression LOGICAL_OR_OPERATOR logical_and_expression { $$ = createNode(NODE_LOGICAL_OR_EXPRESSION, monostate(), $1, $3); }
+	;
+
+conditional_expression
+	: logical_or_expression { $$ = $1; }
+	| logical_or_expression TERNARY_OPERATOR expression COLON conditional_expression { $$ = createNode(NODE_CONDITIONAL_EXPRESSION, monostate(), $1, $3, $5); }
+	;
+
+assignment_expression
+	: conditional_expression { $$ = $1; }
+	| unary_expression assignment_operator assignment_expression { $$ = createNode(NODE_ASSIGNMENT_EXPRESSION, monostate(), $1, $2, $3); }
+	;
+
+
+assignment_operator
+	: ASSIGNMENT_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, string($1)); }
+	| MULTIPLY_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, string($1)); }
+	| DIVIDE_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, string($1)); }
+	| MODULO_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, string($1)); }
+	| PLUS_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, string($1)); }
+	| MINUS_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, string($1)); }
+	| LEFT_SHIFT_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, string($1)); }
+	| RIGHT_SHIFT_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, string($1)); }
+	| BITWISE_AND_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, string($1)); }
+	| BITWISE_XOR_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, string($1)); }
+ 	| BITWISE_OR_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, string($1)); }
+	;
+
+expression
+	: assignment_expression { $$ = $1; }
+	| expression COMMA assignment_expression { $$ = createNode(NODE_EXPRESSION, monostate(), $1, $3); }
+	;
+
+constant_expression
+	: conditional_expression { $$ = $1; }
+	;
+
+declaration
+    : declaration_specifiers SEMICOLON {
+        $$ = $1;
+        // Check if this is a typedef declaration
+        bool isTypedef = false;
+        for (ASTNode* child : $1->children) {
+            if (child && child->valueToString() == "typedef") {
+                isTypedef = true;
+                break;
+            }
+        }
+        
+        if (!isTypedef) {
+            if(ASTNode::nodeTypeToString($$->children[0]->type) == "STRUCT_SPECIFIER"){
+                addStructMembersToSymbolTable($$->children[0]);
+            }
+            else if(ASTNode::nodeTypeToString($$->children[0]->type) == "CLASS_SPECIFIER"){
+                addClassMembersToSymbolTable($$->children[0]);
+            }
+        }
+    }
+    | declaration_specifiers init_declarator_list SEMICOLON {
+        $$ = createNode(NODE_DECLARATION, monostate(), $1, $2);
+        
+        // Check if this is a typedef declaration
+        bool isTypedef = false;
+        for (ASTNode* child : $1->children) {
+            if (child && child->valueToString() == "typedef") {
+                isTypedef = true;
+                break;
+            }
+        }
+        
+        if (isTypedef) {
+            // Handle typedef declaration
+            addTypedefToSymbolTable($1, $2);
+            
+            // Also add struct/class members if present
+            for (ASTNode* child : $1->children) {
+                if (child && ASTNode::nodeTypeToString(child->type) == "STRUCT_SPECIFIER") {
