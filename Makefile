@@ -1,16 +1,37 @@
+# Directories
+SRCDIR = src
+BUILDDIR = build
+
+# Tools
+YACC = /opt/homebrew/opt/bison/bin/bison
 LEX = flex
-YACC = bison
-CC = gcc
-CFLAGS = -Wall
+CC = g++
+LDFLAGS = -lm
+CFLAGS = -I$(BUILDDIR) -std=c++17
 
-all: parser
+# Files
+LEX_SRC = $(SRCDIR)/lexer.l
+YACC_SRC = $(SRCDIR)/parser.y
+LEX_OUT = $(BUILDDIR)/lex.yy.c
+YACC_OUT = $(BUILDDIR)/y.tab.cc
+OUTPUT_BIN = $(BUILDDIR)/parser.out
 
-parser: src/parser.y src/lexer.l
-	$(YACC) -d -o build/y.tab.c src/parser.y
-	$(LEX) -o build/lex.yy.c src/lexer.l
-	$(CC) $(CFLAGS) build/y.tab.c build/lex.yy.c -o build/parser -lfl
+# Create build directory if not exists
+$(shell mkdir -p $(BUILDDIR))
 
+# Default target
+all: build
+
+# Build parser and lexer
+build: $(LEX_SRC) $(YACC_SRC)
+	$(YACC) -d -o $(YACC_OUT) $(YACC_SRC)
+	$(LEX) -o$(LEX_OUT) $(LEX_SRC)
+	$(CC) $(CFLAGS) $(LEX_OUT) $(YACC_OUT) -o $(OUTPUT_BIN) $(LDFLAGS)
+	@echo "Build completed!"
+
+# Clean build artifacts
 clean:
-	rm -rf build/*
+	rm -f $(BUILDDIR)/*
+	@echo "Cleaned build files!"
 
-.PHONY: all clean
+.PHONY: all build clean
