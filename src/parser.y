@@ -998,3 +998,503 @@ shift_expression
         if (($1->typeSpecifier == 3 || $1->typeSpecifier == 4) && 
             ($3->typeSpecifier == 3 || $3->typeSpecifier == 4) && 
             (isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, ">>"))) {
+            $$->typeSpecifier = max($1->typeSpecifier, $3->typeSpecifier);
+            if($1->typeSpecifier != $3->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                $3->tacResult = temp;
+            }
+            string temp = codeGen.newTemp();
+            codeGen.emit(TACOp::RSHFT, temp, $1->tacResult, $3->tacResult);
+            $$->tacResult = temp; 
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        }
+        }
+    }
+	;
+    
+relational_expression
+	: shift_expression { $$ = $1; }
+	| relational_expression LESS_THAN_OPERATOR shift_expression {
+        $$ = createNode(NODE_RELATIONAL_EXPRESSION, $2, $1, $3);
+        backTrackRelExpr($$);
+        int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $3->pointerLevel;
+        if(rhsPointerLevel||lhsPointerLevel){
+                cerr << "Incompatible types: " 
+                     << $1->typeSpecifier << " and " << $3->typeSpecifier 
+                     << " at line " << yylineno << endl;
+        }
+        else{
+        $$->isLValue = false; 
+        if (isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, "<")) {
+            $$->typeSpecifier = 3;
+            if($1->typeSpecifier != $3->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                $3->tacResult = temp;
+            }
+            $$->tacResult = codeGen.newTemp();
+            codeGen.emit(TACOp::LT, "", $1->tacResult, $3->tacResult, true);
+            codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        } 
+    }
+    }
+	| relational_expression GREATER_THAN_OPERATOR shift_expression { 
+        $$ = createNode(NODE_RELATIONAL_EXPRESSION, $2, $1, $3);
+        backTrackRelExpr($$);
+        $$->isLValue = false;
+        int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $3->pointerLevel;
+        if(rhsPointerLevel||lhsPointerLevel){
+                cerr << "Incompatible types: " 
+                     << $1->typeSpecifier << " and " << $3->typeSpecifier 
+                     << " at line " << yylineno << endl;
+        }
+        else{
+        if (isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, ">")) {
+            $$->typeSpecifier = 3;
+            if($1->typeSpecifier != $3->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                $3->tacResult = temp;
+            }
+            codeGen.emit(TACOp::GT, "", $1->tacResult, $3->tacResult, true);
+            codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+            $$->tacResult = codeGen.newTemp();
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        } 
+    }
+    }
+	| relational_expression LESS_THAN_OR_EQUAL_OPERATOR shift_expression {
+        $$ = createNode(NODE_RELATIONAL_EXPRESSION, $2, $1, $3);
+        backTrackRelExpr($$);
+        $$->isLValue = false;
+        int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $3->pointerLevel;
+        if(rhsPointerLevel||lhsPointerLevel){
+                cerr << "Incompatible types: " 
+                     << $1->typeSpecifier << " and " << $3->typeSpecifier 
+                     << " at line " << yylineno << endl;
+        }
+        else{
+        if (isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, "<=")) {
+            $$->typeSpecifier = 3;
+            if($1->typeSpecifier != $3->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                $3->tacResult = temp;
+            }
+            codeGen.emit(TACOp::LE, "", $1->tacResult, $3->tacResult, true);
+            codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+            $$->tacResult = codeGen.newTemp();
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        }
+    }
+    }
+	| relational_expression GREATER_THAN_OR_EQUAL_OPERATOR shift_expression { 
+        $$ = createNode(NODE_RELATIONAL_EXPRESSION, $2, $1, $3);
+        $$->isLValue = false;
+        int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $3->pointerLevel;
+        backTrackRelExpr($$);
+        if(rhsPointerLevel||lhsPointerLevel){
+                cerr << "Incompatible types: " 
+                     << $1->typeSpecifier << " and " << $3->typeSpecifier 
+                     << " at line " << yylineno << endl;
+        }
+        else{
+        if (isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, ">=")) {
+            $$->typeSpecifier = 3;
+            if($1->typeSpecifier != $3->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, "",typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                $3->tacResult = temp;
+            }
+            codeGen.emit(TACOp::GE, "", $1->tacResult, $3->tacResult, true);
+            codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+            $$->tacResult = codeGen.newTemp();
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        } 
+    }
+    }
+	;
+
+equality_expression
+	: relational_expression { $$ = $1; }
+	| equality_expression EQUALS_COMPARISON_OPERATOR relational_expression { 
+        $$ = createNode(NODE_EQUALITY_EXPRESSION, $2, $1, $3);
+        $$->isLValue = false;
+        backTrackRelExpr($$);
+        int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $3->pointerLevel;
+        if(rhsPointerLevel!=lhsPointerLevel){
+                cerr << "Incompatible types: " 
+                     << $1->typeSpecifier << " and " << $3->typeSpecifier 
+                     << " at line " << yylineno << endl;
+        }
+        else{
+        if (isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, "==")) {
+            $$->typeSpecifier = 3;
+            if($1->typeSpecifier != $3->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                $3->tacResult = temp;
+            }
+            codeGen.emit(TACOp::EQ, "", $1->tacResult, $3->tacResult, true);
+            codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+            $$->tacResult = codeGen.newTemp();
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        } 
+    }
+    }
+	| equality_expression NOT_EQUALS_OPERATOR relational_expression { 
+        $$ = createNode(NODE_EQUALITY_EXPRESSION, $2, $1, $3);
+        $$->isLValue = false;
+        backTrackRelExpr($$);
+        int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $3->pointerLevel;
+        if(rhsPointerLevel!=lhsPointerLevel){
+                cerr << "Incompatible types: " 
+                     << $1->typeSpecifier << " and " << $3->typeSpecifier 
+                     << " at line " << yylineno << endl;
+        }
+        else{
+        if (isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, "!=")) {
+            $$->typeSpecifier = 3;
+            if($1->typeSpecifier != $3->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                $3->tacResult = temp;
+            }
+            codeGen.emit(TACOp::NE, "", $1->tacResult, $3->tacResult, true);
+            codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+            $$->tacResult = codeGen.newTemp();
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        }
+        }
+    }
+	;
+
+
+and_expression
+	: equality_expression { $$ = $1; }
+	| and_expression BITWISE_AND_OPERATOR equality_expression { 
+        $$ = createNode(NODE_AND_EXPRESSION, $2, $1, $3); 
+        $$->isLValue = false;
+        int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $3->pointerLevel;
+        if(rhsPointerLevel || lhsPointerLevel){
+                cerr << "Incompatible types: " 
+                     << $1->typeSpecifier << " and " << $3->typeSpecifier 
+                     << " at line " << yylineno << endl;
+        }
+        else{
+        if (($1->typeSpecifier == 3 || $1->typeSpecifier == 4) &&
+            ($3->typeSpecifier == 3 || $3->typeSpecifier == 4) &&
+            (isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, "&"))) {
+            $$->typeSpecifier = max($1->typeSpecifier, $3->typeSpecifier);
+            if($1->typeSpecifier != $3->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                $3->tacResult = temp;
+            }
+            string temp = codeGen.newTemp();
+            codeGen.emit(TACOp::BIT_AND, temp, $1->tacResult, $3->tacResult);
+            $$->tacResult = temp;
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        }
+    }
+    }
+	;
+
+exclusive_or_expression
+	: and_expression { $$ = $1; }
+	| exclusive_or_expression BITWISE_XOR_OPERATOR and_expression { 
+                int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $3->pointerLevel;
+        if(rhsPointerLevel || lhsPointerLevel){
+                cerr << "Incompatible types: " 
+                     << $1->typeSpecifier << " and " << $3->typeSpecifier 
+                     << " at line " << yylineno << endl;
+        }
+        else{
+        $$ = createNode(NODE_EXCLUSIVE_OR_EXPRESSION, $2, $1, $3);
+        $$->isLValue = false;
+        if (($1->typeSpecifier == 3 || $1->typeSpecifier == 4) &&
+            ($3->typeSpecifier == 3 || $3->typeSpecifier == 4) &&
+            (isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, "^"))) {
+            $$->typeSpecifier = max($1->typeSpecifier, $3->typeSpecifier);
+            if($1->typeSpecifier != $3->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                $3->tacResult = temp;
+            }
+            string temp = codeGen.newTemp();
+            codeGen.emit(TACOp::BIT_XOR, temp, $1->tacResult, $3->tacResult);
+            $$->tacResult = temp;
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        }
+    }
+    }
+	;
+
+inclusive_or_expression
+	: exclusive_or_expression { $$ = $1; }
+	| inclusive_or_expression BITWISE_OR_OPERATOR exclusive_or_expression {
+                int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $3->pointerLevel;
+        if(rhsPointerLevel || lhsPointerLevel){
+                cerr << "Incompatible types: " 
+                     << $1->typeSpecifier << " and " << $3->typeSpecifier 
+                     << " at line " << yylineno << endl;
+        }
+        else{
+        $$ = createNode(NODE_INCLUSIVE_OR_EXPRESSION, $2, $1, $3);
+        $$->isLValue = false;
+        if (($1->typeSpecifier == 3 || $1->typeSpecifier == 4) &&
+            ($3->typeSpecifier == 3 || $3->typeSpecifier == 4) &&
+            (isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, "|"))) {
+            $$->typeSpecifier = max($1->typeSpecifier, $3->typeSpecifier);
+            if($1->typeSpecifier != $3->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                $3->tacResult = temp;
+            }
+            string temp = codeGen.newTemp();
+            codeGen.emit(TACOp::BIT_OR, temp, $1->tacResult, $3->tacResult);
+            $$->tacResult = temp;
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        }
+        }
+    }
+	;
+
+logical_and_expression
+	: inclusive_or_expression { $$ = $1; }
+	| logical_and_expression LOGICAL_AND_OPERATOR M inclusive_or_expression { 
+        int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $4->pointerLevel;
+        $$ = createNode(NODE_LOGICAL_AND_EXPRESSION, $2, $1, $4); 
+        $$->isLValue = false;
+        if (isTypeCompatible($1->typeSpecifier, $4->typeSpecifier, "&&")) {
+            $$->typeSpecifier = 3;
+            if($1->typeSpecifier != $4->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $4->typeSpecifier) , $4->tacResult);
+                $4->tacResult = temp;
+            }
+            if(lookupSymbol($1->tacResult, true)){
+            backpatchNode* curr = $1->trueList;
+            backpatchNode* next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex);
+            $1->trueList = next;
+            curr = $1->falseList;
+            next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex + 1);
+            $1->falseList = next;
+            codeGen.emit(TACOp::NE, "", $1->tacResult, "0", true);
+            codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+        }
+
+        if(lookupSymbol($4->tacResult, true)){
+            backpatchNode* curr = $4->trueList;
+            backpatchNode* next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex);
+            $4->trueList = next;
+            curr = $4->falseList;
+            next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex + 1);
+            $4->falseList = next;
+            codeGen.emit(TACOp::NE, "", $4->tacResult, "0", true);
+            codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+        }
+            string temp = codeGen.newTemp();
+            $$->tacResult = temp; 
+            Backpatch::backpatch($1->trueList, $3->tacResult);
+            $$->trueList = $4->trueList;
+            $$->falseList = Backpatch::mergeBackpatchLists($1->falseList, $4->falseList);
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        }
+        $$->tacResult = codeGen.newLabel();
+    }
+	;
+
+logical_or_expression
+	: logical_and_expression { $$ = $1; }
+	| logical_or_expression LOGICAL_OR_OPERATOR M logical_and_expression { 
+        int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $4->pointerLevel;
+        $$ = createNode(NODE_LOGICAL_OR_EXPRESSION, $2, $1, $4); 
+        $$->isLValue = false;
+        if (isTypeCompatible($1->typeSpecifier, $4->typeSpecifier, "||")) {
+            $$->typeSpecifier = 3;
+            if($1->typeSpecifier != $4->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $4->typeSpecifier) , $4->tacResult);
+                $3->tacResult = temp;
+            }
+            if(lookupSymbol($1->tacResult, true)){
+                backpatchNode* curr = $1->trueList;
+                backpatchNode* next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex);
+                $1->trueList = next;
+                curr = $1->falseList;
+                next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex + 1);
+                $1->falseList = next;
+                codeGen.emit(TACOp::NE, "", $1->tacResult, "0", true);
+                codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+            }
+
+        if(lookupSymbol($4->tacResult, true)){
+                backpatchNode* curr = $4->trueList;
+                backpatchNode* next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex);
+                $4->trueList = next;
+                curr = $4->falseList;
+                next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex + 1);
+                $4->falseList = next;
+                codeGen.emit(TACOp::NE, "", $4->tacResult, "0", true);
+                codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+            }
+            string temp = codeGen.newTemp();
+            $$->tacResult = temp; 
+            Backpatch::backpatch($1->falseList, $3->tacResult);
+            $$->falseList = $4->falseList;
+            $$->trueList = Backpatch::mergeBackpatchLists($1->trueList, $4->trueList);
+        } else {
+            cerr << "Incompatible Type: " << $1->typeSpecifier << " and " 
+                 << $3->typeSpecifier << " at line " << yylineno << endl;
+        }
+    }
+	;
+
+M
+  : {
+      $$ = new TreeNode(OTHERS);
+      $$->tacResult = to_string(codeGen.currentInstrIndex + 1);
+    }
+
+
+conditional_expression
+    : logical_or_expression { 
+        $$ = $1; 
+    }
+    | logical_or_expression TERNARY_OPERATOR expression COLON conditional_expression { 
+        int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $3->pointerLevel;
+        if(!rhsPointerLevel || !lhsPointerLevel){
+                cerr << "Incompatible types: " 
+                     << $1->typeSpecifier << " and " << $3->typeSpecifier 
+                     << " at line " << yylineno << endl;
+        }
+        else{
+        $$ = createNode(NODE_CONDITIONAL_EXPRESSION, "?:", $1, $3, $5);
+        $$->isLValue = false;
+        
+        if ($1->typeSpecifier < 0 || $1->typeSpecifier > 7) {
+            cerr << "Ternary operator condition must be boolean, got type " 
+                 << $1->typeSpecifier << " at line " << yylineno << endl;
+        }
+        if (isTypeCompatible($3->typeSpecifier, $5->typeSpecifier, "?:")!=-1) {
+            $$->typeSpecifier = max($3->typeSpecifier, $5->typeSpecifier);
+        } else {
+            cerr << "Incompatible types in ternary operator: " 
+                 << $3->typeSpecifier << " and " << $5->typeSpecifier 
+                 << " at line " << yylineno << endl;
+        }
+        }
+    }
+    ;
+
+assignment_expression
+    : conditional_expression { 
+        $$ = $1; 
+    }
+    | unary_expression assignment_operator assignment_expression { 
+        $$ = createNode(NODE_ASSIGNMENT_EXPRESSION, $2->value, $1, $3);
+        int rhsPointerLevel = $1->pointerLevel;
+        int lhsPointerLevel = $3->pointerLevel;
+        
+        if(rhsPointerLevel!=lhsPointerLevel && !($1->typeSpecifier == 3 && $3->typeCategory == 2)){
+                cerr << "Incompatible types in compound assignment: " 
+                     << "lhs(" << $1->typeSpecifier << ", ptr=" << $1->pointerLevel << ") and " 
+                     << "rhs(" << $3->typeSpecifier << ", ptr=" << $3->pointerLevel << ")"
+                     << " at line " << yylineno << endl;
+        }
+        else{
+        if (!$1->isLValue) {
+            cerr << "Left operand of assignment must be an L-value at line " 
+                 << yylineno << endl;
+        }
+        
+        if ($1->isConst) {
+            cerr << "Left operand of assignment is constant at line " 
+                 << yylineno << endl;
+        }
+        string op = $2->valueToString();
+        if (op == "=") {
+            // For struct/union types (typeSpecifier == 20), just check if types and pointer levels match
+            bool isStructAssignment = ($1->typeSpecifier == 20 && $3->typeSpecifier == 20 && $1->pointerLevel == $3->pointerLevel);
+            
+            if (isStructAssignment || isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, op)) {
+                $$->typeSpecifier = $1->typeSpecifier;
+                if($1->typeSpecifier != $3->typeSpecifier){
+                    string temp = codeGen.newTemp();
+                    codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                    $3->tacResult = temp;
+                }
+            } else {
+                cerr << "Incompatible types in assignment: " 
+                     << "lhs(" << $1->typeSpecifier << ", ptr=" << $1->pointerLevel << ") and " 
+                     << "rhs(" << $3->typeSpecifier << ", ptr=" << $3->pointerLevel << ")"
+                     << " at line " << yylineno << endl;
+            }
+        } else {
+            if ($1->typeSpecifier < 0 || $1->typeSpecifier > 6) { 
+                cerr << "Compound assignment requires numeric type, got " 
+                     << $1->typeSpecifier << " at line " << yylineno << endl;
+            }
+            if (isTypeCompatible($1->typeSpecifier, $3->typeSpecifier, op)) {
+                $$->typeSpecifier = $1->typeSpecifier;
+                if($1->typeSpecifier != $3->typeSpecifier){
+                    string temp = codeGen.newTemp();
+                    codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo($1->typeSpecifier, $3->typeSpecifier) , $3->tacResult);
+                    $3->tacResult = temp;
+            }
+            } else {
+                cerr << "Incompatible types in compound assignment: " 
+                     << $1->typeSpecifier << " and " << $3->typeSpecifier 
+                     << " at line " << yylineno << endl;
+            }
+        }
+        // if ($3->trueList || $3->falseList) {
+        //     Backpatch::backpatch($3->trueList, to_string(codeGen.currentInstrIndex + 1));
+        //     Backpatch::backpatch($3->falseList, to_string(codeGen.currentInstrIndex + 2));
+        //     handleAssignment($2->valueToString(), $1->tacResult, "1", true);
+        //     handleAssignment($2->valueToString(), $1->tacResult, "0", true);
+        // } else {
+        //     handleAssignment($2->valueToString(), $1->tacResult, $3->tacResult);
+        // }
+        string temp = codeGen.newTemp();
+        if($2->valueToString() == "="){
+            codeGen.emit(TACOp::ASSIGN, $1->tacResult, $3->tacResult, nullopt);
+        }else if($2->valueToString() == "+="){
+            codeGen.emit(TACOp::ADD, $1->tacResult, $1->tacResult, $3->tacResult);
