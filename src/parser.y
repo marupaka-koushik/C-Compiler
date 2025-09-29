@@ -1498,3 +1498,503 @@ assignment_expression
             codeGen.emit(TACOp::ASSIGN, $1->tacResult, $3->tacResult, nullopt);
         }else if($2->valueToString() == "+="){
             codeGen.emit(TACOp::ADD, $1->tacResult, $1->tacResult, $3->tacResult);
+        }else if($2->valueToString() == "-="){
+            codeGen.emit(TACOp::SUB, $1->tacResult, $1->tacResult, $3->tacResult);
+        }else if($2->valueToString() == "*="){
+            codeGen.emit(TACOp::MUL, $1->tacResult, $1->tacResult, $3->tacResult);
+        }else if($2->valueToString() == "/="){
+            codeGen.emit(TACOp::DIV, $1->tacResult, $1->tacResult, $3->tacResult);
+        }else if($2->valueToString() == "%="){
+            codeGen.emit(TACOp::MOD, $1->tacResult, $1->tacResult, $3->tacResult);
+        }else if($2->valueToString() == "&="){
+            codeGen.emit(TACOp::BIT_AND, $1->tacResult, $1->tacResult, $3->tacResult);
+        }else if($2->valueToString() == "|="){
+            codeGen.emit(TACOp::BIT_OR, $1->tacResult, $1->tacResult, $3->tacResult);
+        }else if($2->valueToString() == "^="){
+            codeGen.emit(TACOp::BIT_XOR, $1->tacResult, $1->tacResult, $3->tacResult);
+        }else if($2->valueToString() == "<<="){
+            codeGen.emit(TACOp::LSHFT,$1->tacResult,$1->tacResult,$3->tacResult);
+        }else if($2->valueToString() == ">>="){
+            codeGen.emit(TACOp::RSHFT,$1->tacResult,$1->tacResult,$3->tacResult);
+        }
+        $$->tacResult = temp;
+    }
+    }
+    ;
+
+
+assignment_operator
+	: ASSIGNMENT_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, $1); }
+	| MULTIPLY_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, $1); }
+	| DIVIDE_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, $1); }
+	| MODULO_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, $1); }
+	| PLUS_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, $1); }
+	| MINUS_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, $1); }
+	| LEFT_SHIFT_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, $1); } 
+	| RIGHT_SHIFT_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, $1); }
+	| BITWISE_AND_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, $1); }
+	| BITWISE_XOR_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, $1); }
+ 	| BITWISE_OR_ASSIGN_OPERATOR { $$ = createNode(NODE_ASSIGNMENT_OPERATOR, $1); }
+	;
+
+expression
+	: assignment_expression { $$ = $1; }
+	| expression COMMA assignment_expression { $$ = createNode(NODE_EXPRESSION, monostate(), $1, $3); }
+	;
+
+constant_expression
+	: conditional_expression { $$ = $1;$$->type = NODE_CONSTANT_EXPRESSION; }
+	;
+
+single_expression
+    : expression{
+        $$ = $1;
+        if(lookupSymbol($$->tacResult, true)){
+            backpatchNode* curr = $1->trueList;
+            backpatchNode* next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex);
+            $$->trueList = next;
+            curr = $1->falseList;
+            next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex + 1);
+            $$->falseList = next;
+            codeGen.emit(TACOp::NE, "", $1->tacResult, "0", true);
+            codeGen.emit(TACOp::oth, "", "", "", true);
+        }
+    }
+    ;
+
+declaration
+    : declaration_specifiers SEMICOLON {
+        $$ = $1;
+    }
+    | declaration_specifiers init_declarator_list SEMICOLON 
+    {
+        $$ = createNode(NODE_DECLARATION, monostate(), $1, $2);
+        
+        // Register typedef names immediately before processing
+        registerTypedefNamesFromDeclaration($1, $2);
+        
+        bool isCustom = false;
+        for(auto child: $1->children){
+            if(child->type == NODE_STRUCT_OR_UNION_SPECIFIER){
+                isCustom = true;
+                break;
+            }
+        }
+        if(isCustom){
+            // Check if we have storage class or qualifiers (but allow typedef)
+            bool hasNonTypedefStorage = false;
+            bool isTypedef = false;
+            for(auto child: $1->children){
+                if(child->type == NODE_STORAGE_CLASS_SPECIFIER){
+                    string storageVal = child->valueToString();
+                    if(storageVal == "typedef"){
+                        isTypedef = true;
+                    } else {
+                        hasNonTypedefStorage = true;
+                    }
+                } else if(child->type == NODE_TYPE_QUALIFIER){
+                    hasNonTypedefStorage = true;
+                }
+            }
+            
+            if(hasNonTypedefStorage){
+                cerr << "Error: Type Qualifier or Storage Class Specifier (other than typedef) is not allowed to be used with struct or union" << endl;
+                break;
+            }
+            
+            // If typedef, process normally through addDeclarators
+            if(isTypedef){
+                addDeclarators($1, $2);
+            } else if($1->children.size() > 1){
+                // Non-typedef with multiple children - shouldn't happen now
+                cerr << "Error: Type Qualifier or Storage Class Specifier is not allowed to be used with struct or union" << endl;
+                break;
+            } else {
+                // Regular struct declaration
+                TreeNode* newDeclSpec = createNode(NODE_DECLARATION_SPECIFIERS, monostate(), $1->children[0]->children[1]);
+                $1->children[0]->children[1]->type = NODE_TYPE_SPECIFIER;
+                addDeclarators(newDeclSpec, $2);
+                $1->children[0]->children[1]->type = NODE_IDENTIFIER;
+                delete newDeclSpec;
+            }
+        }else{
+            addDeclarators($1, $2);
+        }
+    };
+
+
+declaration_specifiers
+	: storage_class_specifier { $$ = createNode(NODE_DECLARATION_SPECIFIERS, monostate(), $1); }
+	| storage_class_specifier declaration_specifiers { 
+        $$ = createNode(NODE_DECLARATION_SPECIFIERS, monostate(), $1);
+        for(auto child : $2->children){
+            $$->addChild(child);
+        }
+    }
+	| type_specifier { $$ = createNode(NODE_DECLARATION_SPECIFIERS, monostate(), $1);$$->storageClass = $1->storageClass;}
+	| type_specifier declaration_specifiers { 
+        $$ = createNode(NODE_DECLARATION_SPECIFIERS, monostate(), $1);
+        for(auto child : $2->children){
+            $$->addChild(child);
+        }
+    }
+	| type_qualifier { $$ = createNode(NODE_DECLARATION_SPECIFIERS, monostate(), $1); $$->storageClass = $1->storageClass;}
+	| type_qualifier declaration_specifiers { 
+        $$ = createNode(NODE_DECLARATION_SPECIFIERS, monostate(), $1);
+        for(auto child : $2->children){
+            $$->addChild(child);
+        }
+         
+    }
+	;    
+
+init_declarator_list
+    : init_declarator { 
+        $$ = createNode(NODE_DECLARATOR_LIST, monostate(), $1); 
+    }
+    | init_declarator_list COMMA init_declarator { 
+        $$ = $1;
+        $$->children.push_back($3);
+    }
+    ;
+
+init_declarator
+    : declarator { 
+        $$ = createNode(NODE_DECLARATOR, monostate(), $1, nullptr); 
+    }
+    | declarator ASSIGNMENT_OPERATOR initializer { 
+        $$ = createNode(NODE_DECLARATOR, $2, $1, $3);   
+        $$->storageClass = $3->storageClass;
+    }
+    ;
+
+storage_class_specifier
+    : KEYWORD_TYPEDEF   { $$ = $1; $$->type = NODE_STORAGE_CLASS_SPECIFIER; }
+    | KEYWORD_EXTERN    { $$ = $1; $$->type = NODE_STORAGE_CLASS_SPECIFIER; }
+    | KEYWORD_STATIC    { $$ = $1; $$->type = NODE_STORAGE_CLASS_SPECIFIER; }
+    | KEYWORD_AUTO      { $$ = $1; $$->type = NODE_STORAGE_CLASS_SPECIFIER; }
+    | KEYWORD_REGISTER  { $$ = $1; $$->type = NODE_STORAGE_CLASS_SPECIFIER; }
+    ;
+
+
+type_specifier
+	: struct_type_specifier { $$ = $1; }
+    | struct_or_union_specifier {
+        $$ = $1;
+        $$->type = NODE_TYPE_SPECIFIER;
+        $$->typeSpecifier = 20;
+        $$->typeCategory = 4;
+    }
+    | class_specifier { $$ = $1;}
+	;
+
+struct_type_specifier
+	: KEYWORD_VOID { $$ = $1; $$->type = NODE_TYPE_SPECIFIER; $$->storageClass = 0;}
+	| KEYWORD_CHAR { $$ = $1; $$->type = NODE_TYPE_SPECIFIER; $$->storageClass = 1;}
+    | KEYWORD_SHORT { $$ = $1; $$->type = NODE_TYPE_SPECIFIER; $$->storageClass = 2;}
+    | KEYWORD_INT { $$ = $1; $$->type = NODE_TYPE_SPECIFIER; $$->storageClass = 3;}
+    | KEYWORD_LONG { $$ = $1; $$->type = NODE_TYPE_SPECIFIER; $$->storageClass = 4;}
+    | KEYWORD_FLOAT { $$ = $1; $$->type = NODE_TYPE_SPECIFIER; $$->storageClass = 12;}
+    | KEYWORD_DOUBLE { $$ = $1; $$->type = NODE_TYPE_SPECIFIER; $$->storageClass = 13;}
+    | KEYWORD_SIGNED { $$ = $1; $$->type = NODE_TYPE_SPECIFIER; }
+    | KEYWORD_UNSIGNED { $$ = $1; $$->type = NODE_TYPE_SPECIFIER; }
+    | TYPE_NAME {$$ = $1; $$->type = NODE_TYPE_SPECIFIER; }
+    | TYPEDEF_NAME {$$ = $1; $$->type = NODE_TYPE_SPECIFIER; }
+    | struct_or_union_specifier {
+        $$ = $1;
+        // Mark this as a type specifier for declaration processing
+        $$->type = NODE_TYPE_SPECIFIER;
+        $$->typeSpecifier = 20; // Custom type
+        $$->typeCategory = 4;   // Class/struct/union
+    }
+    | enum_specifier {
+        $$ = $1;
+        $$->type = NODE_TYPE_SPECIFIER;
+        $$->typeSpecifier = 3;  // Enums are treated as int
+        $$->typeCategory = 0;
+    }
+	;
+
+class_specifier
+    : {if (insideClass) yyerror("Nested classes are not allowed.");} 
+        KEYWORD_CLASS ID LBRACE 
+        {
+            classOrStructOrUnion.insert($3->valueToString());
+            insideClass = true;
+            enterScope();
+        }
+      member_declaration_list RBRACE 
+        {
+            $$ = createNode(NODE_CLASS_SPECIFIER, monostate(), $3, $6);
+            exitScope();
+            insideClass = false;
+        }
+    ;
+
+member_declaration_list
+    : member_declaration
+        { $$ = createNode(NODE_MEMBER_DECLARATION_LIST, monostate(), $1); }
+    | member_declaration_list member_declaration
+        { $$ = $1; $$->children.push_back($2); }
+    ;
+
+member_declaration
+    : access_specifier COLON
+        { $$ = createNode(NODE_ACCESS_SPECIFIER, monostate(), $1); }
+    | declaration
+        { $$ = $1; }
+    | constructor_function
+        { $$ = $1; }
+    | function_definition
+        { $$ = $1; }
+    | destructor_function
+        { $$ = $1; }
+    ;
+
+
+access_specifier
+    : KEYWORD_PUBLIC {accessSpecifier = 1; $$ = $1; }
+    | KEYWORD_PRIVATE {accessSpecifier = 0; $$ = $1; }
+    | KEYWORD_PROTECTED {accessSpecifier = 2;  $$ = $1; }
+    ;
+
+struct_or_union_specifier
+    : struct_or_union ID {
+            string varName = $2->valueToString();
+            classOrStructOrUnion.insert(varName);
+            auto checkDuplicate = [&](const string &name) {
+            for (const auto &entry : currentTable->symbolTable)
+            {
+                if (entry.first == name)
+                {
+                    cerr << "Error: Duplicate declaration of '" << name << "'\n";
+                    return true;
+                }
+            }
+            return false;
+            };
+            if(!checkDuplicate(varName)){
+                insertSymbol(varName, $2);
+                $2->typeCategory = 4;
+                $2->typeSpecifier = 20;
+            }
+            enterScope();
+    } LBRACE struct_declaration_list RBRACE {
+            $$ = createNode(NODE_STRUCT_OR_UNION_SPECIFIER,monostate(), $1, $2, $5);
+            $2->symbolTable = currentTable->symbolTable;
+            exitScope();
+    }
+    | struct_or_union {
+            // Anonymous struct/union - generate a unique name
+            static int anonCount = 0;
+            string anonName = "__anon_" + string($1->valueToString()) + "_" + to_string(anonCount++);
+            TreeNode* nameNode = createNode(NODE_IDENTIFIER, anonName);
+            classOrStructOrUnion.insert(anonName);
+            insertSymbol(anonName, nameNode);
+            nameNode->typeCategory = 4;
+            nameNode->typeSpecifier = 20;
+            enterScope();
+            $<node>$ = nameNode;  // Save name node for later
+    } LBRACE struct_declaration_list RBRACE {
+            TreeNode* nameNode = $<node>2;
+            $$ = createNode(NODE_STRUCT_OR_UNION_SPECIFIER, monostate(), $1, nameNode, $4);
+            nameNode->symbolTable = currentTable->symbolTable;
+            exitScope();
+    }
+    | struct_or_union TYPE_NAME {
+            // Using an already-defined struct/union type
+            $$ = createNode(NODE_STRUCT_OR_UNION_SPECIFIER, monostate(), $1, $2);
+    }
+    | struct_or_union TYPEDEF_NAME {
+            // Using a typedef'd struct/union type
+            $$ = createNode(NODE_STRUCT_OR_UNION_SPECIFIER, monostate(), $1, $2);
+    }
+    ;
+
+struct_or_union
+    : KEYWORD_STRUCT { $$ = $1; }
+    | KEYWORD_UNION { $$ = $1; }
+    ;
+
+enum_specifier
+    : KEYWORD_ENUM ID LBRACE enumerator_list RBRACE {
+            string enumName = $2->valueToString();
+            // Note: Don't add to classOrStructOrUnion since enums are different
+            $$ = createNode(NODE_ENUM_SPECIFIER, monostate(), $1, $2, $4);
+            
+            // Register enum constants in symbol table
+            int enumValue = 0;
+            for (auto &enumerator : $4->children) {
+                string constName = enumerator->children[0]->valueToString();
+                TreeNode* constNode = enumerator->children[0];
+                
+                // If enumerator has explicit value, use it
+                if (enumerator->children.size() > 1) {
+                    // Get the constant expression value
+                    TreeNode* valueExpr = enumerator->children[1];
+                    if (valueExpr->type == NODE_CONSTANT) {
+                        enumValue = std::stoi(valueExpr->valueToString());
+                    }
+                }
+                
+                // Create constant node
+                constNode->typeSpecifier = 3;  // int
+                constNode->typeCategory = 0;   // value
+                constNode->isConstant = true;
+                constNode->constantValue = enumValue;
+                
+                // Insert into symbol table
+                insertSymbol(constName, constNode);
+                
+                enumValue++;
+            }
+    }
+    | KEYWORD_ENUM LBRACE enumerator_list RBRACE {
+            // Anonymous enum
+            $$ = createNode(NODE_ENUM_SPECIFIER, monostate(), $1, $3);
+            
+            // Register enum constants in symbol table
+            int enumValue = 0;
+            for (auto &enumerator : $3->children) {
+                string constName = enumerator->children[0]->valueToString();
+                TreeNode* constNode = enumerator->children[0];
+                
+                // If enumerator has explicit value, use it
+                if (enumerator->children.size() > 1) {
+                    TreeNode* valueExpr = enumerator->children[1];
+                    if (valueExpr->type == NODE_CONSTANT) {
+                        enumValue = std::stoi(valueExpr->valueToString());
+                    }
+                }
+                
+                constNode->typeSpecifier = 3;  // int
+                constNode->typeCategory = 0;   // value
+                constNode->isConstant = true;
+                constNode->constantValue = enumValue;
+                
+                insertSymbol(constName, constNode);
+                
+                enumValue++;
+            }
+    }
+    | KEYWORD_ENUM ID {
+            // Reference to existing enum type (e.g., enum Color c;)
+            $$ = createNode(NODE_ENUM_SPECIFIER, monostate(), $1, $2);
+    }
+    ;
+
+enumerator_list
+    : enumerator {
+        $$ = createNode(NODE_ENUMERATOR_LIST, monostate(), $1);
+    }
+    | enumerator_list COMMA enumerator {
+        $$ = $1;
+        $$->children.push_back($3);
+    }
+    ;
+
+enumerator
+    : ID {
+        $$ = createNode(NODE_ENUMERATOR, monostate(), $1);
+    }
+    | ID ASSIGNMENT_OPERATOR constant_expression {
+        $$ = createNode(NODE_ENUMERATOR, monostate(), $1, $3);
+    }
+    ;
+
+struct_declaration_list
+    : struct_declaration { 
+        $$ = createNode(NODE_STRUCT_DECLARATION_LIST, monostate(), $1); 
+    }
+    | struct_declaration_list struct_declaration { 
+        $$ = $1;
+        $$->children.push_back($2);
+    }
+    ;
+
+struct_declaration
+    : specifier_qualifier_list struct_declarator_list SEMICOLON {
+        $$ = createNode(NODE_STRUCT_DECLARATION, monostate(), $1, $2);
+        DeclaratorInfo declInfo = isValidVariableDeclaration($1->children, false);
+        if (declInfo.isValid)
+        {
+    // For struct-typed members, look up the struct definition
+    auto helper = $1;
+    for (auto specChild : $1->children) {
+        if (specChild->type == NODE_TYPE_SPECIFIER) {
+            helper = specChild;
+            break;
+        }
+    }
+    TreeNode* typeInfo = helper;
+    if (declInfo.typeCategory == 4) {
+        // This is a struct/class/union type - look up its definition
+        // For struct_or_union_specifier (which now has type NODE_TYPE_SPECIFIER), get the TYPE_NAME child
+        string typeName;
+        if (helper->children.size() >= 2) {
+            // This is a struct_or_union_specifier with [struct_or_union, TYPE_NAME]
+            typeName = helper->children[1]->valueToString();
+        } else {
+            typeName = helper->valueToString();
+        }
+        TreeNode* lookedUp = lookupSymbol(typeName);
+        if (lookedUp != nullptr) {
+            typeInfo = lookedUp;
+        }
+    }
+    
+    for (auto child : $2->children)
+    {
+        if (child->type != NODE_DECLARATOR) continue;
+
+        TreeNode *firstChild = child->children[0];
+        string varName;
+        TreeNode *identifierNode = firstChild;
+        auto setNodeAttributes = [&](TreeNode *node, int typeCategory, int pointerLevel = 0) {
+            node->typeCategory = typeCategory;
+            node->pointerLevel = pointerLevel;
+            node->storageClass = declInfo.storageClass;
+            node->typeSpecifier = declInfo.typeSpecifier;
+            if(pointerLevel == 1){node->typeSpecifier *= 10;}
+            node->isConst = declInfo.isConst;
+            node->isStatic = declInfo.isStatic;
+            node->isVolatile = declInfo.isVolatile;
+            node->isUnsigned = declInfo.isUnsigned;
+            // Copy symbol table for struct-typed members
+            if (typeInfo != nullptr) {
+                node->symbolTable = typeInfo->symbolTable;
+            }
+        };
+        auto checkDuplicate = [&](const string &name) {
+            for (const auto &entry : currentTable->symbolTable)
+            {
+                if (entry.first == name)
+                {
+                    cerr << "Error: Duplicate declaration of '" << name << "'\n";
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        if (firstChild->type == ARRAY)
+        {
+            vector<int> dimensions = findArrayDimensions(firstChild);
+            while (identifierNode && identifierNode->type == ARRAY) {
+                if (identifierNode->children.empty()) break;
+                identifierNode = identifierNode->children[0];
+            }
+            varName = identifierNode->valueToString();
+            if (checkDuplicate(varName)) continue;
+
+            int size = child->children.size();
+            if (size == 1 || size == 2) {
+                bool validDims = all_of(dimensions.begin(), dimensions.end(), [](int d) { return d != -1; });
+                if (!validDims) {
+                    cerr << "Invalid declaration dimension cannot be empty\n";
+                    continue;
+                }
+                if (size == 2 && !checkInitializerLevel(child->children[1], declInfo.typeSpecifier, dimensions, 0)) {
+                    cerr << "Error\n";
+                    continue;
+                }
