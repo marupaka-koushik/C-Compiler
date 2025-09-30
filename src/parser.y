@@ -1998,3 +1998,929 @@ struct_declaration
                     cerr << "Error\n";
                     continue;
                 }
+                setNodeAttributes(identifierNode, 2); 
+                identifierNode->dimensions = dimensions;
+                insertSymbol(varName, identifierNode);
+            }
+        }
+        else if (firstChild->type == NODE_POINTER)
+        {
+            int pointerDepth = 0;
+            while (identifierNode && identifierNode->type == NODE_POINTER) {
+                pointerDepth++;
+                if (identifierNode->children.empty()) break;
+                identifierNode = identifierNode->children[0];
+            }
+            varName = identifierNode->valueToString();
+
+            if (identifierNode->type == ARRAY) 
+            {
+                vector<int> dimensions = findArrayDimensions(identifierNode);
+                varName = identifierNode->children[0]->valueToString();
+                if (checkDuplicate(varName)) continue;
+
+                int size = child->children.size();
+                if (size == 1 || size == 2) {
+                    bool validDims = all_of(dimensions.begin(), dimensions.end(), [](int d) { return d != -1; });
+                    if (!validDims) {
+                        cerr << "Invalid declaration dimension cannot be empty\n";
+                        continue;
+                    }
+                    if (size == 2 && !checkInitializerLevel(child->children[1], declInfo.typeSpecifier, dimensions, pointerDepth)) {
+                        cerr << "Error: Invalid initializer for array of pointers '" << varName << "'\n";
+                        continue;
+                    }
+                    setNodeAttributes(identifierNode, 2, pointerDepth);
+                    identifierNode->dimensions = dimensions;
+                    insertSymbol(varName, identifierNode);
+                }
+            }
+            else 
+            {
+                if (checkDuplicate(varName)) continue;
+                int size = child->children.size();
+                if (size == 1 || (size == 2 )) {
+                    setNodeAttributes(identifierNode, 1, pointerDepth);
+                    insertSymbol(varName, identifierNode);
+                }
+                else {
+                    cerr << "Error: Invalid pointer " << (size == 2 ? "initialization" : "declarator syntax") << " for '" << varName << "'\n";
+                }
+            }
+        }
+        else 
+        {
+            varName = firstChild->valueToString();
+            if (checkDuplicate(varName)) continue;
+
+            int size = child->children.size();
+            if (size == 1) {
+                if (declInfo.isConst) {
+                    cerr << "Error: Const variable '" << varName << "' must be initialized\n";
+                    continue;
+                }
+                setNodeAttributes(identifierNode, 0);
+                insertSymbol(varName, identifierNode);
+            }
+            else if (size == 2 && (isTypeCompatible(declInfo.typeSpecifier, child->children[1]->typeSpecifier, "="))) {
+                if(declInfo.typeSpecifier != child->children[1]->typeSpecifier){
+                    string temp = codeGen.newTemp();
+                    codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo(declInfo.typeSpecifier, child->children[1]->typeSpecifier) , child->children[1]->tacResult);
+                    child->children[1]->tacResult = temp;
+                }
+                setNodeAttributes(identifierNode, 0);
+                insertSymbol(varName, identifierNode);
+            }
+            else {
+                cerr << "Error: " << (size == 2 ? "Type mismatch in initialization" : "Invalid declarator syntax") << " for '" << varName << "'\n";
+            }
+        }
+}        }
+    }
+    ;
+
+specifier_qualifier_list
+	: struct_type_specifier specifier_qualifier_list {$$ = $2; $2->addChild($1);}
+	| struct_type_specifier { $$ = createNode(NODE_SPECIFIER_QUALIFIER_LIST, monostate(), $1); }
+	| type_qualifier specifier_qualifier_list { $$ = $2; $2->addChild($1); }
+	| type_qualifier { $$ = createNode(NODE_SPECIFIER_QUALIFIER_LIST, monostate(), $1); }
+	;
+
+struct_declarator_list
+    : declarator { 
+        TreeNode* temp = createNode(NODE_DECLARATOR, monostate(), $1);
+        $$ = createNode(NODE_STRUCT_DECLARATOR_LIST, monostate(), temp); 
+    }
+    | struct_declarator_list COMMA declarator { 
+        TreeNode* temp = createNode(NODE_DECLARATOR, monostate(), $3);
+        $$->children.push_back(temp);
+    }
+    ;
+    
+type_qualifier
+	: KEYWORD_CONST { $$ = $1; $$->type = NODE_TYPE_QUALIFIER; }
+	| KEYWORD_VOLATILE { $$ = $1; $$->type = NODE_TYPE_QUALIFIER; }
+	;
+
+declarator
+    : pointer direct_declarator { 
+        TreeNode* lastPointer = $1;
+        while (!lastPointer->children.empty() && lastPointer->children[0]->type == NODE_POINTER) {
+            lastPointer = lastPointer->children[0];
+        }
+        lastPointer->addChild($2);
+        $$ = $1;
+        $$->pointerLevel++;
+    }
+    | pointer reference direct_declarator {
+        // Handle int* &ptr - reference to pointer
+        TreeNode* lastPointer = $1;
+        while (!lastPointer->children.empty() && lastPointer->children[0]->type == NODE_POINTER) {
+            lastPointer = lastPointer->children[0];
+        }
+        TreeNode* refNode = createNode(NODE_REFERENCE, monostate(), $3);
+        refNode->isReference = true;
+        lastPointer->addChild(refNode);
+        $$ = $1;
+        $$->pointerLevel++;
+    }
+    | reference direct_declarator {
+        $$ = createNode(NODE_REFERENCE, monostate(), $2);
+        $$->isReference = true;
+    }
+    | direct_declarator { 
+        $$ = $1; 
+    }
+    ;
+
+direct_declarator
+    : ID { 
+        $$ = $1;
+    }
+    | LPAREN declarator RPAREN { 
+        $$ = $2;
+    }
+    | direct_declarator LBRACKET INTEGER RBRACKET { 
+        // Validate array size
+        int arraySize = stoi($3->valueToString());
+        if (arraySize <= 0) {
+            cerr << "Error: Array size must be positive, got: " << arraySize << endl;
+            YYABORT;
+        }
+        $$ = createNode(ARRAY, monostate(), $1, $3); 
+    }
+    | direct_declarator LBRACKET RBRACKET { 
+        $$ = createNode(ARRAY, monostate(), $1, nullptr); 
+    }
+    | direct_declarator LPAREN parameter_type_list RPAREN { 
+        $$ = createNode(NODE_DECLARATOR, monostate(), $1, $3); 
+    }
+    | direct_declarator LPAREN identifier_list RPAREN { 
+        $$ = createNode(NODE_DECLARATOR, monostate(), $1, $3); 
+    }
+    | direct_declarator LPAREN RPAREN { 
+        $$ = createNode(NODE_DECLARATOR, monostate(), $1, nullptr); 
+    }
+    ;
+
+pointer
+	: MULTIPLY_OPERATOR { $$ = createNode(NODE_POINTER, $1); }
+	| MULTIPLY_OPERATOR type_qualifier_list { $$ = createNode(NODE_POINTER, $1, $2); }
+	| MULTIPLY_OPERATOR pointer { $$ = createNode(NODE_POINTER, $1, $2); }
+	| MULTIPLY_OPERATOR type_qualifier_list pointer { $$ = createNode(NODE_POINTER, $1, $2, $3); }
+	;
+
+reference
+	: BITWISE_AND_OPERATOR { $$ = createNode(NODE_REFERENCE, $1); }
+	| BITWISE_AND_OPERATOR type_qualifier_list { $$ = createNode(NODE_REFERENCE, $1, $2); }
+	;
+
+type_qualifier_list
+    : type_qualifier { 
+        $$ = createNode(NODE_TYPE_QUALIFIER_LIST, monostate(), $1); 
+    }
+    | type_qualifier_list type_qualifier { 
+        $$ = $1;
+        $$->children.push_back($2);
+    }
+    ;
+
+parameter_type_list
+    : parameter_list { 
+        $$ = $1; 
+    }
+    | parameter_list COMMA ELLIPSIS_OPERATOR { 
+        $$ = createNode(NODE_PARAMETER_TYPE_LIST, monostate(), $1);
+        $$->children.push_back($3); 
+    }
+    ;
+
+
+parameter_list
+    : parameter_declaration { 
+        $$ = createNode(NODE_PARAMETER_LIST, monostate(), $1); 
+    }
+    | parameter_list COMMA parameter_declaration { 
+        $$ = $1;
+        $$->children.push_back($3);
+    }
+    ;
+
+parameter_declaration
+	: declaration_specifiers declarator { $$ = createNode(NODE_PARAMETER_DECLARATION, monostate(), $1, $2); }
+	| declaration_specifiers abstract_declarator { $$ = createNode(NODE_PARAMETER_DECLARATION, monostate(), $1, $2); }
+	| declaration_specifiers { $$ = $1; }
+	;
+
+identifier_list
+    : ID { 
+        $$ = createNode(NODE_IDENTIFIER_LIST, monostate(), $1); 
+    }
+    | identifier_list COMMA ID { 
+        $$ = $1;
+        $$->children.push_back($3);
+    }
+    ;
+
+type_name
+	: specifier_qualifier_list { $$ = $1; }
+	| specifier_qualifier_list abstract_declarator { $$ = createNode(NODE_TYPE_NAME, monostate(), $1, $2); }
+	;
+
+abstract_declarator
+	: pointer {  $$ = $1;}
+	| direct_abstract_declarator { $$ = createNode(NODE_ABSTRACT_DECLARATOR, monostate(), $1); }
+	| pointer direct_abstract_declarator { $$ = createNode(NODE_ABSTRACT_DECLARATOR, monostate(), $1, $2); }
+	;
+
+direct_abstract_declarator
+	: LPAREN abstract_declarator RPAREN {  $$ = $2; }
+	| LBRACKET RBRACKET { $$ = createNode(NODE_DIRECT_ABSTRACT_DECLARATOR, monostate()); }
+	| LBRACKET constant_expression RBRACKET {  $$ = $2; }
+	| direct_abstract_declarator LBRACKET RBRACKET  {  $$ = $1; } 
+	| direct_abstract_declarator LBRACKET constant_expression RBRACKET { $$ = createNode(NODE_DIRECT_ABSTRACT_DECLARATOR, monostate(), $1, $3); }
+	| LPAREN RPAREN { $$ = createNode(NODE_DIRECT_ABSTRACT_DECLARATOR, monostate()); }
+	| LPAREN parameter_type_list RPAREN {  $$ = $2; }
+	| direct_abstract_declarator LPAREN RPAREN {  $$ = $1; }
+	| direct_abstract_declarator LPAREN parameter_type_list RPAREN { $$ = createNode(NODE_DIRECT_ABSTRACT_DECLARATOR, monostate(), $1, $3); }
+	;
+
+initializer
+	: assignment_expression { $$ = $1; }
+	| LBRACE initializer_list RBRACE { $$ = $2;}
+	| LBRACE initializer_list COMMA RBRACE { $$ = $2; }
+	;
+
+initializer_list
+    : initializer { 
+        $$ = createNode(NODE_INITIALIZER_LIST, monostate(), $1); 
+    }
+    | initializer_list COMMA initializer { 
+        $$ = $1;
+        $$->children.push_back($3);
+    }
+    ;
+
+statement
+	: labeled_statement { $$ = $1; }
+	| compound_statement { $$ = $1;}
+	| expression_statement { $$ = $1; }
+	| selection_statement { 
+        $$ = $1;
+        Backpatch::backpatch($1->nextList, to_string(codeGen.currentInstrIndex + 1)); 
+        }
+	| iteration_statement { 
+        $$ = $1;
+        Backpatch::backpatch($1->nextList, to_string(codeGen.currentInstrIndex  + 1)); 
+        }
+	| jump_statement { $$ = $1; }
+    | io_statement{$$ = $1;}
+    | scope_resolution_statement { $$ = $1; }
+    ;
+
+scope_resolution_statement
+    : ID SCOPE_RESOLUTION_OPERATOR ID SEMICOLON { $$ = createNode(NODE_SCOPE_RESOLUTION_STATEMENT, monostate(), $1, $3); }
+    | ID SCOPE_RESOLUTION_OPERATOR ID ASSIGNMENT_OPERATOR expression SEMICOLON { 
+        $$ = createNode(NODE_SCOPE_RESOLUTION_STATEMENT, $4, $1, $3, $5); 
+        string target = $1->valueToString() + "::" + $3->valueToString();
+        codeGen.emit(TACOp::ASSIGN, target, $5->tacResult, nullopt);}
+	;
+
+io_statement
+    : KEYWORD_PRINTF LPAREN STRING RPAREN SEMICOLON 
+        {
+            $3->tacResult = $3->valueToString();
+            $$ = createNode(NODE_IO_STATEMENT, monostate(), $1, $3);  
+            if (!checkFormatSpecifiers($3->valueToString(), {})) {
+                cerr << "Error: Format string in printf has specifiers but no arguments provided" << endl;
+                YYABORT;
+            }else{
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::ASSIGN, "param", $3->tacResult);
+                codeGen.emit(TACOp::CALL, temp, "printf", "1");   
+            }
+        }
+    | KEYWORD_PRINTF LPAREN STRING COMMA argument_expression_list RPAREN SEMICOLON 
+        {
+            $3->tacResult = $3->valueToString();     
+            $$ = createNode(NODE_IO_STATEMENT, monostate(), $1, $3, $5);          
+            vector<int> types = typeExtract($5);
+            if (!checkFormatSpecifiers($3->valueToString(), types)) {
+                cerr << "Error: Type mismatch between format specifiers and arguments in printf" << endl;
+                YYABORT;
+            }else{
+                codeGen.emit(TACOp::ASSIGN, "param", $3->tacResult);
+                for (auto* arg : $5->children) {
+                    codeGen.emit(TACOp::ASSIGN, "param", arg->tacResult);
+                }
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::CALL, temp, "printf", to_string($5->children.size() + 1));
+                $$->tacResult = temp;   
+            }
+        }
+    | KEYWORD_SCANF LPAREN STRING COMMA argument_expression_list RPAREN SEMICOLON 
+        {
+            $3->tacResult = $3->valueToString();
+            $$ = createNode(NODE_IO_STATEMENT, monostate(), $1, $3, $5); 
+            
+            // For scanf, we check argument count and pointer requirements
+            if (!checkScanfArguments($3->valueToString(), $5)) {
+                YYABORT;
+            }
+            codeGen.emit(TACOp::ASSIGN, "param", $3->tacResult);
+            for (auto* arg : $5->children) {
+                codeGen.emit(TACOp::ASSIGN, "param", arg->tacResult);
+            }
+            string temp = codeGen.newTemp();
+            codeGen.emit(TACOp::CALL, temp, "scanf", to_string($5->children.size() + 1));
+            $$->tacResult = temp;
+        }
+    ;
+
+labeled_statement
+	: ID { 
+        codeGen.emit(TACOp::LABEL, $1->valueToString());
+        if(Label_defn.find($1->valueToString())!=Label_defn.end()){
+            cerr << "Re definition of lables is not allowed\n";
+        }else{
+            Label_defn[$1->valueToString()] = to_string(codeGen.currentInstrIndex + 1);
+        }
+    } COLON statement { 
+        $$ = createNode(NODE_LABELED_STATEMENT, monostate(), $1, $4);
+        $1->typeCategory = 7;
+        $1->typeSpecifier = 9;
+        insertSymbol($1->valueToString(), $1);
+        }
+    | KEYWORD_CASE constant_expression COLON {
+        if(inSwitch.size() == 0) {
+            cerr << "Error: Case label must be inside switch statement" << endl;
+            YYABORT;
+        }
+        
+        // Validate that the case expression is a constant (literal)
+        // Check if it's a primary expression with a literal value
+        string caseValue = $2->valueToString();
+        
+        // Check if the value is a variable by looking it up in symbol table
+        // If it's found as a variable, it's not a constant
+        if(lookupSymbol(caseValue, true) != nullptr) {
+            cerr << "Error: Case label must be a constant expression, not a variable: " << caseValue << endl;
+            YYABORT;
+        }
+        
+        // Check for duplicate case values
+        if(inSwitch.size() > 0) {
+            for(const auto& existingCase : switchCases.top()) {
+                if(existingCase.first == caseValue) {
+                    cerr << "Error: Duplicate case value: " << caseValue << endl;
+                    YYABORT;
+                }
+            }
+        }
+        
+        // Generate label for this case
+        string caseLabel = codeGen.newLabel();
+        
+        // Add this case to the list
+        if(inSwitch.size() > 0) {
+            switchCases.top().push_back(make_pair(caseValue, caseLabel));
+        }
+        
+        codeGen.emit(TACOp::LABEL, caseLabel, nullopt, nullopt);
+        $<node>$ = createNode(NODE_LABELED_STATEMENT, monostate());
+        $<node>$->tacResult = caseLabel;
+    } statement {
+        $$ = createNode(NODE_LABELED_STATEMENT, monostate(), $2, $5);
+        $$->nextList = $5->nextList;
+        $$->breakList = $5->breakList;
+    }
+    | KEYWORD_DEFAULT COLON {
+        if(inSwitch.size()==0){
+            cerr << "Error: Default case should be used inside switch statement" << endl;
+            YYABORT;
+        }
+        else if(inSwitch.top()){
+            cerr << "Error: Multiple default labels in switch statement" << endl;
+            YYABORT;
+        }
+        else{
+            inSwitch.pop();
+            inSwitch.push(true);
+        }
+        // Generate label for default case
+        string defaultLabel = codeGen.newLabel();
+        
+        // Store default label
+        if(inSwitch.size() > 0) {
+            switchDefaultLabel.top() = defaultLabel;
+        }
+        
+        codeGen.emit(TACOp::LABEL, defaultLabel, nullopt, nullopt);
+        $<node>$ = createNode(NODE_LABELED_STATEMENT, monostate());
+        $<node>$->tacResult = defaultLabel;
+    } statement {
+        $$ = createNode(NODE_LABELED_STATEMENT, monostate(), $4);
+        $$->nextList = $4->nextList;
+        $$->breakList = $4->breakList;
+    }
+	;
+
+
+compound_statement
+    : LBRACE { enterScope(); } RBRACE { $$ = createNode(NODE_COMPOUND_STATEMENT, monostate()); exitScope();}
+    | LBRACE { enterScope(); } block_item_list RBRACE {$$ = $3; exitScope(); }
+    ;
+
+block_item_list
+    : block_item { 
+        $$ = createNode(NODE_BLOCK_ITEM_LIST, monostate(), $1);
+        $$->continueList = $1->continueList;
+        $$->breakList = $1->breakList; 
+    }
+    | block_item_list block_item { 
+        $$ = $1; 
+        $$->children.push_back($2);
+        $$->continueList = Backpatch::mergeBackpatchLists($1->continueList, $2->continueList);
+        $$->breakList = Backpatch::mergeBackpatchLists($1->breakList, $2->breakList);
+        }
+    ;
+
+block_item
+    : declaration 
+    | statement {$$ = $1;}
+    ;
+
+expression_statement
+	: SEMICOLON { $$ = createNode(NODE_EXPRESSION_STATEMENT, monostate()); }
+	| expression SEMICOLON { $$ = $1; }
+	;
+
+
+selection_statement
+    :KEYWORD_IF LPAREN single_expression RPAREN M statement N %prec NO_ELSE  {
+        Backpatch::backpatch($3->trueList, $5->tacResult); 
+        backpatchNode* merged = Backpatch::mergeBackpatchLists($3->falseList, $7->nextList); 
+        $$->nextList = Backpatch::mergeBackpatchLists(merged, $6->nextList);                
+    }
+    | KEYWORD_IF LPAREN single_expression RPAREN M statement N KEYWORD_ELSE M statement  {
+        Backpatch::backpatch($3->trueList, $5->tacResult); 
+        Backpatch::backpatch($3->falseList, $9->tacResult);
+        backpatchNode* merged = Backpatch::mergeBackpatchLists($6->nextList, $7->nextList);
+        $$->nextList = Backpatch::mergeBackpatchLists(merged, $10->nextList);
+    }
+    | KEYWORD_SWITCH LPAREN expression RPAREN {
+        inSwitch.push(false);
+        switchExpr.push($3->tacResult); // Store the switch expression
+        switchCases.push(vector<pair<string, string>>()); // Initialize empty case list
+        switchDefaultLabel.push(""); // Initialize empty default label
+        
+        // Save the position where we need to insert case comparisons (after expression evaluation)
+        $<intVal>$ = codeGen.currentInstrIndex;
+    } statement {
+        $$ = createNode(NODE_SELECTION_STATEMENT, monostate(), $3, $6);
+        
+        // Get the saved information
+        int insertPos = $<intVal>5;
+        string expr = switchExpr.top();
+        vector<pair<string, string>> cases = switchCases.top();
+        string defaultLabel = switchDefaultLabel.top();
+        
+        // Generate end label FIRST (before inserting, so backpatch indices are correct relative to current code)
+        string endLabel = codeGen.newLabel();
+        codeGen.emit(TACOp::LABEL, endLabel, nullopt, nullopt);
+        
+        // Backpatch all break statements to the end of switch (do this BEFORE inserting)
+        Backpatch::backpatch($6->breakList, endLabel);
+        
+        // Now insert comparison code at the saved position
+        // This will shift all subsequent instructions (including the backpatched ones)
+        // This is a limitation - the backpatched indices will be wrong after insertion
+        int currentInsertPos = insertPos;
+        
+        // Generate comparisons for all cases
+        for(const auto& caseInfo : cases) {
+            string caseValue = caseInfo.first;
+            string caseLabel = caseInfo.second;
+            
+            // if (expr == caseValue) goto caseLabel
+            codeGen.insertAt(currentInsertPos++, TACOp::IF_EQ, caseLabel, expr, caseValue);
+        }
+        
+        // After all comparisons, jump to default or end
+        if(!defaultLabel.empty()) {
+            codeGen.insertAt(currentInsertPos++, TACOp::GOTO, defaultLabel, nullopt, nullopt);
+        } else {
+            codeGen.insertAt(currentInsertPos++, TACOp::GOTO, endLabel, nullopt, nullopt);
+        }
+        
+        // Clean up stacks
+        inSwitch.pop();
+        switchExpr.pop();
+        switchCases.pop();
+        switchDefaultLabel.pop();
+    }
+    
+iteration_statement
+    : M KEYWORD_WHILE LPAREN single_expression RPAREN {enterScope(); inLoop++;} M statement  {
+        Backpatch::backpatch($4->trueList, $7->tacResult);
+        Backpatch::backpatch($8->nextList, $1->tacResult);
+        codeGen.emit(TACOp::oth, $1->tacResult, nullopt, nullopt, true);
+        Backpatch::backpatch($8->continueList, $1->tacResult);
+        $$->nextList = Backpatch::mergeBackpatchLists($8->breakList, $4->falseList);
+        inLoop--;
+        exitScope();
+    }
+    | M KEYWORD_UNTIL LPAREN single_expression RPAREN {enterScope(); inLoop++;} M statement  {
+        // until is like while(!(condition)), so swap true and false lists
+        Backpatch::backpatch($4->falseList, $7->tacResult);
+        Backpatch::backpatch($8->nextList, $1->tacResult);
+        codeGen.emit(TACOp::oth, $1->tacResult, nullopt, nullopt, true);
+        Backpatch::backpatch($8->continueList, $1->tacResult);
+        $$->nextList = Backpatch::mergeBackpatchLists($8->breakList, $4->trueList);
+        inLoop--;
+        exitScope();
+    }
+    | KEYWORD_DO M {enterScope(); inLoop++;} statement M  {inLoop--; exitScope();} KEYWORD_WHILE LPAREN single_expression RPAREN{
+        Backpatch::backpatch($9->trueList, $2->tacResult);
+        Backpatch::backpatch($4->continueList, $5->tacResult);
+        $$->nextList = Backpatch::mergeBackpatchLists($4->breakList, $9->falseList);
+    }
+    | KEYWORD_FOR LPAREN {enterScope();} for_init M for_cond M for_inc RPAREN {
+            inLoop++;
+            codeGen.emit(TACOp::oth, $5->tacResult, nullopt, nullopt, true);
+        } M statement { 
+            Backpatch::backpatch($6->trueList, $11->tacResult);            
+            Backpatch::backpatch($12->nextList, $7->tacResult);
+            Backpatch::backpatch($12->continueList, $7->tacResult);
+            $$->nextList = Backpatch::mergeBackpatchLists($12->breakList, $6->falseList);
+            codeGen.emit(TACOp::oth, $7->tacResult, nullopt, nullopt, true);
+            exitScope();
+            inLoop--; 
+        }
+    ;
+
+for_init
+    : expression_statement {$$ = $1;}
+    | declaration {$$ = $1;}
+    ;
+for_cond
+    : expression_statement {$$ = $1; }
+    ;
+
+for_inc
+    : /* empty */ { $$ = createNode(NODE_EXPRESSION_STATEMENT, monostate()); }
+    | expression {$$ = $1;}
+    | expression_statement {$$ =$1;} 
+    ;
+
+jump_statement
+	: KEYWORD_GOTO ID SEMICOLON { 
+        $$ = createNode(NODE_JUMP_STATEMENT, monostate(), $1, $2);
+        if(Label_defn.count($2->valueToString()) == 0){
+            cerr << "Error: Goto to undefined label '" << $2->valueToString() << "'" << endl;
+            YYABORT;
+        }else{
+            codeGen.emit(TACOp::GOTO, Label_defn[$2->valueToString()]);
+        }
+    }
+	| KEYWORD_CONTINUE SEMICOLON {
+        if(inLoop <= 0){
+            cerr << "Error: Continue statement must be inside a loop" << endl;
+            YYABORT;
+        }
+        // Note: Continue is allowed in a loop inside a switch
+        $$ = $1;
+        backpatchNode* curr = nullptr;
+        backpatchNode* next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex);
+        $$->continueList = next;
+        codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+    }
+	| KEYWORD_BREAK SEMICOLON { 
+        if(inLoop <= 0 && inSwitch.size() == 0){
+            cerr << "Error: Break statement must be inside a loop or switch statement" << endl;
+            YYABORT;
+        }
+        backpatchNode* curr = nullptr;
+        backpatchNode* next = Backpatch::addToBackpatchList(curr, codeGen.currentInstrIndex);
+        $$->breakList = next;
+        codeGen.emit(TACOp::oth, "", nullopt, nullopt, true);
+     }
+	| KEYWORD_RETURN SEMICOLON { 
+        if(!inFunc) {
+            cerr << "Error: Return statement must be inside a function" << endl;
+            YYABORT;
+        }
+        $$ = $1;
+        if(expectedReturnType != -1){
+            cerr << "Error: Expected return expression in non-void function.\n";
+            YYABORT;
+        }
+        codeGen.emit(TACOp::RETURN, ""); 
+        }
+	| KEYWORD_RETURN expression SEMICOLON { 
+        if(!inFunc) {
+            cerr << "Error: Return statement must be inside a function" << endl;
+            YYABORT;
+        }
+        $$ = createNode(NODE_JUMP_STATEMENT, monostate(), $1, $2);
+        if(expectedReturnType == -1){
+            cerr << "Error: Return statement without a value in void function.\n";
+        }
+        if(!isTypeCompatible(expectedReturnType, $2->typeSpecifier, "=")){
+            cerr << "Error: Type mismatch in return statement.\n";
+        }
+        else{
+            if(expectedReturnType != $2->typeSpecifier){
+                string temp = codeGen.newTemp();
+                codeGen.emit(TACOp::TYPECAST, temp,typeCastInfo(expectedReturnType, $2->typeSpecifier) , $2->tacResult);
+                $2->tacResult = temp;
+            }else{
+                codeGen.emit(TACOp::RETURN, $2->tacResult);
+            }
+        } 
+    }
+	;
+
+translation_unit
+    : external_declaration {
+        $$ = $1;
+    }
+    | translation_unit external_declaration {
+        $$ = createNode(NODE_TRANSLATION_UNIT, monostate(), $1, $2);
+    }
+    ;
+
+
+external_declaration
+	: function_definition { $$ = $1;}
+	| declaration { $$ = $1;}
+    | scope_resolution_statements {$$=$1;}
+    ;
+
+scope_resolution_statements
+    : ID SCOPE_RESOLUTION_OPERATOR ID SEMICOLON
+    | ID SCOPE_RESOLUTION_OPERATOR ID assignment_operator expression SEMICOLON
+    | ID SCOPE_RESOLUTION_OPERATOR ID LPAREN RPAREN SEMICOLON
+    | ID SCOPE_RESOLUTION_OPERATOR ID LPAREN argument_expression_list RPAREN SEMICOLON
+    ;
+
+constructor_function
+    : ID LPAREN {enterScope();} parameter_list RPAREN compound_statement {
+        $$ = createNode(NODE_CONSTRUCTOR_FUNCTION, monostate(), $1, $4, $6);
+        exitScope();
+    }
+    | ID LPAREN RPAREN {enterScope();} compound_statement {
+        $$ = createNode(NODE_CONSTRUCTOR_FUNCTION, monostate(), $1, $5); exitScope();
+    }
+    ;
+
+function_definition
+    : declaration_specifiers declarator {
+        DeclaratorInfo declInfo = isValidVariableDeclaration($1->children, true);
+        if (declInfo.isValid) {
+            // Check if return type is a reference
+            TreeNode* actualDeclarator = $2;
+            bool isRefReturn = false;
+            if ($2->type == NODE_REFERENCE) {
+                isRefReturn = true;
+                if (!$2->children.empty()) {
+                    actualDeclarator = $2->children[0];
+                }
+            }
+            
+            string funcName = actualDeclarator->children[0]->valueToString();
+            codeGen.emit(TACOp::LABEL, funcName, nullopt, nullopt);
+            insertSymbol(funcName, actualDeclarator->children[0]);
+            enterScope();
+            TreeNode* funcNode = actualDeclarator->children[0];
+            funcNode->storageClass = declInfo.storageClass;
+            funcNode->typeSpecifier = declInfo.typeSpecifier;
+            funcNode->isReference = isRefReturn;
+            expectedReturnType = declInfo.typeSpecifier;
+            funcNode->isConst = declInfo.isConst;
+            funcNode->isStatic = declInfo.isStatic;
+            funcNode->isVolatile = declInfo.isVolatile;
+            funcNode->isUnsigned = declInfo.isUnsigned;
+            funcNode->typeCategory = 3;
+            if(actualDeclarator->children.size() > 1 && actualDeclarator->children[1]->type == NODE_PARAMETER_LIST) {
+            for (auto param : actualDeclarator->children[1]->children) {
+                if (param->type == NODE_PARAMETER_DECLARATION) {
+
+                    TreeNode* paramDeclarator = param->children[1];
+                    TreeNode* varNode = paramDeclarator;
+                    bool isRefParam = false;
+                    int pointerDepth = 0;
+                    bool isArrayParam = false;
+                    
+                    // Check for pointer (with or without reference)
+                    if (paramDeclarator->type == NODE_POINTER) {
+                        TreeNode* temp = paramDeclarator;
+                        while (temp && temp->type == NODE_POINTER) {
+                            pointerDepth++;
+                            if (temp->children.empty()) break;
+                            temp = temp->children[0];
+                        }
+                        // Check if we have a reference after the pointer(s)
+                        if (temp && temp->type == NODE_REFERENCE) {
+                            isRefParam = true;
+                            if (!temp->children.empty()) {
+                                varNode = temp->children[0];
+                            }
+                        } 
+                        // Check if we have an array after the pointer(s)
+                        else if (temp && temp->type == ARRAY) {
+                            isArrayParam = true;
+                            varNode = temp->children[0];
+                        }
+                        else {
+                            varNode = temp ? temp : paramDeclarator;
+                        }
+                    }
+                    // Check if parameter is a reference (no pointer)
+                    else if (paramDeclarator->type == NODE_REFERENCE) {
+                        isRefParam = true;
+                        if (!paramDeclarator->children.empty()) {
+                            varNode = paramDeclarator->children[0];
+                        }
+                    }
+                    // Check if parameter is an array
+                    else if (paramDeclarator->type == ARRAY) {
+                        isArrayParam = true;
+                        varNode = paramDeclarator->children[0];
+                    }
+                    
+                    string varName = varNode->valueToString();
+                    
+                    bool isDuplicate = false;
+                    for (const auto &entry : currentTable->symbolTable)
+                    {
+                        if (entry.first == varName)
+                        {
+                            cerr << "Error: Duplicate declaration of variable '" << varName << "'\n";
+                            isDuplicate = true;
+                            break;
+                        }
+                    }
+                    if (isDuplicate) continue;
+
+                    DeclaratorInfo paramInfo = isValidVariableDeclaration(param->children[0]->children, false);
+                    if (paramInfo.isValid) {
+                        // Check for invalid static parameter
+                        if (paramInfo.isStatic) {
+                            cerr << "Error: Function parameters cannot have 'static' storage class" << endl;
+                            YYABORT;
+                        }
+                        if (isRefParam) {
+                            varNode->typeCategory = 8;  // Reference
+                            varNode->isReference = true;
+                            varNode->pointerLevel = pointerDepth;  // Set pointer level for ref to pointer
+                        } else if (isArrayParam) {
+                            // Arrays as parameters are treated as pointers in C
+                            varNode->typeCategory = 1;  // Pointer
+                            varNode->pointerLevel = 1;
+                        } else if (pointerDepth > 0) {
+                            varNode->typeCategory = 1;  // Pointer
+                            varNode->pointerLevel = pointerDepth;
+                        } else {
+                            varNode->typeCategory = 0;  // Regular variable
+                        }
+                        varNode->storageClass = paramInfo.storageClass;
+                        varNode->typeSpecifier = paramInfo.typeSpecifier;
+                        varNode->isConst = paramInfo.isConst;
+                        varNode->isStatic = paramInfo.isStatic;
+                        varNode->isVolatile = paramInfo.isVolatile;
+                        varNode->isUnsigned = paramInfo.isUnsigned;
+                        funcNode->paramTypes.push_back(varNode->typeSpecifier);
+                        funcNode->paramCount++;
+                        insertSymbol(varName, varNode);
+                    }
+                }
+            }}                    
+        }else {
+            cerr << "Error: Invalid function declaration for '" << $2->children[0]->valueToString() << "'\n";
+        }
+        inFunc = true;
+    } compound_statement {
+        $$ = createNode(NODE_FUNCTION_DEFINITION, monostate(), $1, $2, $4);
+        exitScope();
+        inFunc = false;
+        expectedReturnType = -1;
+    }
+
+
+destructor_function
+    : BITWISE_NOT_OPERATOR ID LPAREN RPAREN {enterScope();} compound_statement {
+        $$ = createNode(NODE_DESTRUCTOR_FUNCTION, monostate(),$2, $6); exitScope();
+    }
+    ;
+%%
+
+void yyerror(const char *s) {
+    extern char *yytext;
+    extern int yylineno;
+    cout << "Error: " << s << " at '" << yytext << "' on line " << yylineno << endl;
+}
+
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        cout << "Usage: " << argv[0] << " <input_file>" << endl;
+        return 1;
+    }
+
+    yyin = fopen(argv[1], "r");
+    if (!yyin) {
+        cout << "Error opening file" << endl;
+        return 1;
+    }
+
+    currentTable = new Table();
+    tableStack.push(currentTable);
+    offsetStack.push(0);
+    allTables.push_back(currentTable);
+
+    // Add built-in library functions to global scope
+    // malloc: void* malloc(size_t size)
+    TreeNode* mallocNode = new TreeNode(NODE_IDENTIFIER, string("malloc"));
+    mallocNode->typeCategory = 3;  // Function
+    mallocNode->typeSpecifier = 0; // void* (treated as void, pointerLevel = 1)
+    mallocNode->pointerLevel = 1;
+    mallocNode->paramCount = 1;
+    mallocNode->paramTypes.push_back(3);  // int (size_t ~ unsigned long, but we'll use int)
+    insertSymbol("malloc", mallocNode);
+    
+    // calloc: void* calloc(size_t num, size_t size)
+    TreeNode* callocNode = new TreeNode(NODE_IDENTIFIER, string("calloc"));
+    callocNode->typeCategory = 3;  // Function
+    callocNode->typeSpecifier = 0; // void*
+    callocNode->pointerLevel = 1;
+    callocNode->paramCount = 2;
+    callocNode->paramTypes.push_back(3);  // int
+    callocNode->paramTypes.push_back(3);  // int
+    insertSymbol("calloc", callocNode);
+    
+    // realloc: void* realloc(void* ptr, size_t size)
+    TreeNode* reallocNode = new TreeNode(NODE_IDENTIFIER, string("realloc"));
+    reallocNode->typeCategory = 3;  // Function
+    reallocNode->typeSpecifier = 0; // void*
+    reallocNode->pointerLevel = 1;
+    reallocNode->paramCount = 2;
+    reallocNode->paramTypes.push_back(0);  // void* (ptr)
+    reallocNode->paramTypes.push_back(3);  // int (size)
+    insertSymbol("realloc", reallocNode);
+    
+    // free: void free(void* ptr)
+    TreeNode* freeNode = new TreeNode(NODE_IDENTIFIER, string("free"));
+    freeNode->typeCategory = 3;  // Function
+    freeNode->typeSpecifier = 0; // void
+    freeNode->pointerLevel = 0;
+    freeNode->paramCount = 1;
+    freeNode->paramTypes.push_back(0);  // void* (ptr)
+    insertSymbol("free", freeNode);
+    
+    // sizeof is handled as a unary operator, not as a function
+
+    int result = yyparse();
+    fclose(yyin);
+    
+    // If parsing failed, exit with error code
+    if (result != 0) {
+        cerr << "Compilation failed due to errors." << endl;
+        return 1;
+    }
+    
+    // Print symbol table for debugging (to stderr so it doesn't mix with 3AC output)
+    streambuf* cerrBuf = cerr.rdbuf();
+    printSymbolTables();
+    cerr.rdbuf(cerrBuf);
+
+    mkdir("output", 0777); 
+
+    string inputPath(argv[1]);
+    string base = inputPath.substr(inputPath.find_last_of("/\\") + 1);
+    string outName = "output/" + base.substr(0, base.find_last_of('.')) + ".3ac";
+
+    ofstream out(outName); 
+    if (!out) {
+        cerr << "Error opening output file: " << outName << endl;
+        return 1;
+    }
+
+        streambuf* coutbuf = cout.rdbuf();
+        cout.rdbuf(out.rdbuf());
+
+        // Print static initialization section if there are any static variables
+        if (!staticInitCode.empty()) {
+            cout << ".static_init:\n";
+            for (const auto& init : staticInitCode) {
+                cout << init << "\n";
+            }
+            cout << "\n";
+        }
+
+        codeGen.printTAC();
+
+        cout.rdbuf(coutbuf);
+
+    return 0;
+}
