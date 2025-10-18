@@ -1,22 +1,15 @@
-// Edge case testing for typedef
+// Test 5: Nested typedef
 typedef int Integer;
-typedef Integer MyInt;
-
-typedef struct Node {
-    int data;
-    struct Node* next;
-} Node;
-
-typedef Node* NodePtr;
+typedef Integer* IntegerPtr;
+typedef IntegerPtr* IntegerPtrPtr;
 
 int main() {
-    MyInt x;
-    Node n;
-    NodePtr head;
+    Integer x = 100;
+    IntegerPtr p = &x;
+    IntegerPtrPtr pp = &p;
     
-    x = 42;
-    n.data = 100;
-    head = 0;
+    Integer val1 = *p;
+    Integer val2 = **pp;
     
     return 0;
 }

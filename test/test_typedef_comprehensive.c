@@ -1,29 +1,70 @@
-// Comprehensive typedef test
+// Basic type typedefs
 typedef int Integer;
+typedef char Character;
 typedef float Real;
-typedef int* IntPtr;
-typedef int IntArray[10];
+typedef unsigned int UInt;
 
-typedef struct Point {
+// Pointer typedefs
+typedef int* IntPtr;
+typedef char* String;
+
+// Enum typedef
+typedef enum {
+    MONDAY,
+    TUESDAY,
+    WEDNESDAY,
+    THURSDAY,
+    FRIDAY
+} Weekday;
+
+// Struct typedef
+typedef struct {
     int x;
     int y;
 } Point;
 
-typedef struct {
-    float x;
-    float y;
-    float z;
-} Vector3D;
+// Union typedef
+typedef union {
+    int asInt;
+    float asFloat;
+    char asChar;
+} Value;
 
 int main() {
-    // Regular declarations work fine
-    int num;
-    float val;
-    int* ptr;
-    int arr[5];
+    // Basic type usage
+    Integer a = 10;
+    Character b = 'A';
+    Real c = 3.14;
+    UInt d = 42;
     
-    // Struct declarations also work
-    struct Point p;
+    // Pointer usage
+    Integer val = 100;
+    IntPtr ptr = &val;
     
-    return 0;
+    // Enum usage
+    Weekday today = MONDAY;
+    Weekday tomorrow = TUESDAY;
+    
+    if (today == MONDAY) {
+        tomorrow = FRIDAY;
+    }
+    
+    // Arithmetic with typedefs
+    Integer sum = a + d;
+    Integer product = sum * 2;
+    
+    // Expressions
+    Integer result = (a > 5) ? (sum + 10) : (product - 5);
+    
+    // Loops
+    Integer i;
+    for (i = 0; i < 5; i = i + 1) {
+        result = result + i;
+    }
+    
+    while (result > 100) {
+        result = result - 10;
+    }
+    
+    return result;
 }
