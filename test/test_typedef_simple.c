@@ -1,9 +1,14 @@
+// Simple typedef test
+
 typedef int Integer;
-typedef float Real;
-typedef int* IntPtr;
+typedef char Character;
 
 int main() {
-    int a;
-    float b;
-    return 0;
+    Integer x = 10;
+    Integer y = 20;
+    Character c = 'A';
+    
+    Integer sum = x + y;
+    
+    return sum;
 }
